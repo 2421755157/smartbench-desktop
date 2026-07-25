@@ -1,0 +1,119 @@
+<Application x:Class="SmartBench.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             StartupUri="MainWindow.xaml">
+  <Application.Resources>
+    <Color x:Key="Canvas">#F5F7FB</Color>
+    <Color x:Key="Panel">#FFFFFF</Color>
+    <Color x:Key="Ink">#132238</Color>
+    <Color x:Key="Muted">#69788C</Color>
+    <Color x:Key="Primary">#246BFD</Color>
+    <Color x:Key="PrimaryDark">#1A55D8</Color>
+    <Color x:Key="Line">#E7ECF3</Color>
+    <Color x:Key="Navy">#10233F</Color>
+    <Color x:Key="SideNavy">#0C1B31</Color>
+    <Color x:Key="SoftBlue">#ECF2FF</Color>
+    <Color x:Key="Success">#16A36A</Color>
+    <Color x:Key="Warning">#E39119</Color>
+
+    <SolidColorBrush x:Key="CanvasBrush" Color="{StaticResource Canvas}" />
+    <SolidColorBrush x:Key="PanelBrush" Color="{StaticResource Panel}" />
+    <SolidColorBrush x:Key="InkBrush" Color="{StaticResource Ink}" />
+    <SolidColorBrush x:Key="MutedBrush" Color="{StaticResource Muted}" />
+    <SolidColorBrush x:Key="PrimaryBrush" Color="{StaticResource Primary}" />
+    <SolidColorBrush x:Key="LineBrush" Color="{StaticResource Line}" />
+    <SolidColorBrush x:Key="SoftBlueBrush" Color="{StaticResource SoftBlue}" />
+
+    <Style TargetType="{x:Type Window}">
+      <Setter Property="FontFamily" Value="Segoe UI" />
+      <Setter Property="Foreground" Value="{StaticResource InkBrush}" />
+      <Setter Property="Background" Value="{StaticResource CanvasBrush}" />
+    </Style>
+
+    <Style TargetType="{x:Type Button}">
+      <Setter Property="Padding" Value="16,9" />
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="{StaticResource InkBrush}" />
+      <Setter Property="Background" Value="{StaticResource PanelBrush}" />
+      <Setter Property="BorderBrush" Value="{StaticResource LineBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="{x:Type Button}">
+            <Border x:Name="border" CornerRadius="8" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="border" Property="Opacity" Value="0.86" /></Trigger>
+              <Trigger Property="IsPressed" Value="True"><Setter TargetName="border" Property="Opacity" Value="0.72" /><Setter TargetName="border" Property="RenderTransform"><Setter.Value><TranslateTransform Y="1" /></Setter.Value></Setter></Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="border" Property="BorderBrush" Value="{StaticResource PrimaryBrush}" /><Setter TargetName="border" Property="BorderThickness" Value="2" /></Trigger>
+              <Trigger Property="IsEnabled" Value="False"><Setter TargetName="border" Property="Opacity" Value="0.45" /></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style x:Key="PrimaryButton" TargetType="{x:Type Button}" BasedOn="{StaticResource {x:Type Button}}">
+      <Setter Property="Foreground" Value="White" />
+      <Setter Property="Background" Value="{StaticResource PrimaryBrush}" />
+      <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}" />
+    </Style>
+
+    <Style TargetType="{x:Type TextBox}">
+      <Setter Property="Padding" Value="10,7" />
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="Background" Value="White" />
+      <Setter Property="BorderBrush" Value="{StaticResource LineBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Style.Triggers>
+        <Trigger Property="IsKeyboardFocused" Value="True"><Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}" /><Setter Property="BorderThickness" Value="2" /></Trigger>
+      </Style.Triggers>
+    </Style>
+
+    <Style TargetType="{x:Type ComboBox}">
+      <Setter Property="Padding" Value="8,5" />
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="Background" Value="White" />
+      <Setter Property="BorderBrush" Value="{StaticResource LineBrush}" />
+    </Style>
+
+    <Style x:Key="Caption" TargetType="{x:Type TextBlock}">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+      <Setter Property="Margin" Value="0,0,0,4" />
+    </Style>
+
+    <Style TargetType="{x:Type TabItem}">
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Padding" Value="16,10" />
+    </Style>
+
+    <Style TargetType="{x:Type DataGrid}">
+      <Setter Property="Background" Value="White" />
+      <Setter Property="BorderBrush" Value="{StaticResource LineBrush}" />
+      <Setter Property="RowBackground" Value="White" />
+      <Setter Property="AlternatingRowBackground" Value="#FAFBFD" />
+      <Setter Property="AlternationCount" Value="2" />
+      <Setter Property="HorizontalGridLinesBrush" Value="{StaticResource LineBrush}" />
+      <Setter Property="VerticalGridLinesBrush" Value="Transparent" />
+      <Setter Property="RowHeight" Value="34" />
+    </Style>
+
+    <Style TargetType="{x:Type DataGridColumnHeader}">
+      <Setter Property="Background" Value="#F7F9FC" />
+      <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="Padding" Value="10,8" />
+      <Setter Property="BorderBrush" Value="{StaticResource LineBrush}" />
+    </Style>
+
+    <Style TargetType="{x:Type ProgressBar}">
+      <Setter Property="Foreground" Value="{StaticResource PrimaryBrush}" />
+      <Setter Property="Background" Value="#EAF0F7" />
+    </Style>
+  </Application.Resources>
+</Application>

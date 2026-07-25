@@ -1,0 +1,145 @@
+<UserControl x:Class="SmartBench.Views.CommunicationView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="#F5F7FB">
+  <Grid Margin="30">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+    </Grid.RowDefinitions>
+
+    <Border Background="White" BorderBrush="#E7ECF3" BorderThickness="1" CornerRadius="11" Padding="14,11" Margin="0,0,0,18">
+      <DockPanel>
+        <StackPanel Orientation="Horizontal">
+          <Ellipse Width="8" Height="8" Fill="#16A36A" Margin="0,3,8,0" />
+          <TextBlock Text="通信控制台" FontWeight="SemiBold" FontSize="13" />
+        </StackPanel>
+        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+          <TextBlock Text="串口、Modbus RTU 与 UDP 均在本机运行" FontSize="11" Foreground="#69788C" Margin="0,0,15,0" />
+          <Button Padding="11,5" Click="RefreshPorts_Click">刷新串口</Button>
+        </StackPanel>
+      </DockPanel>
+    </Border>
+
+    <Border Grid.Row="1" Background="White" BorderBrush="#E7ECF3" BorderThickness="1" CornerRadius="12" Padding="6">
+      <TabControl>
+        <TabItem Header="RS232 串口">
+          <Grid Margin="16">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <Border Background="#F7F9FC" CornerRadius="9" Padding="13" Margin="0,0,0,15">
+              <WrapPanel VerticalAlignment="Center">
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="端口" Style="{StaticResource Caption}" /><ComboBox x:Name="SerialPortSelector" Width="102" /></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="波特率" Style="{StaticResource Caption}" /><ComboBox x:Name="SerialBaudSelector" Width="105" SelectedIndex="3"><ComboBoxItem Content="9600"/><ComboBoxItem Content="19200"/><ComboBoxItem Content="57600"/><ComboBoxItem Content="115200"/></ComboBox></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="数据位" Style="{StaticResource Caption}" /><ComboBox x:Name="SerialDataBits" Width="75" SelectedIndex="1"><ComboBoxItem Content="7"/><ComboBoxItem Content="8"/></ComboBox></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="校验" Style="{StaticResource Caption}" /><ComboBox x:Name="SerialParity" Width="90" SelectedIndex="0"><ComboBoxItem Content="None"/><ComboBoxItem Content="Even"/><ComboBoxItem Content="Odd"/></ComboBox></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="停止位" Style="{StaticResource Caption}" /><ComboBox x:Name="SerialStopBits" Width="75" SelectedIndex="0"><ComboBoxItem Content="1"/><ComboBoxItem Content="2"/></ComboBox></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="编码" Style="{StaticResource Caption}" /><ComboBox x:Name="SerialEncodingSelector" Width="80" SelectedIndex="0"><ComboBoxItem Content="UTF-8"/><ComboBoxItem Content="GBK"/><ComboBoxItem Content="ASCII"/></ComboBox></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="发送结尾" Style="{StaticResource Caption}" /><ComboBox x:Name="SerialLineEndingSelector" Width="88" SelectedIndex="0"><ComboBoxItem Content="不追加"/><ComboBoxItem Content="CRLF"/><ComboBoxItem Content="LF"/><ComboBoxItem Content="CR"/></ComboBox></StackPanel>
+                <Button x:Name="SerialConnectButton" Style="{StaticResource PrimaryButton}" Margin="0,17,0,0" Click="SerialConnectButton_Click">打开串口</Button>
+              </WrapPanel>
+            </Border>
+            <Grid Grid.Row="1">
+              <Grid.ColumnDefinitions><ColumnDefinition Width=".86*"/><ColumnDefinition Width="1.14*"/></Grid.ColumnDefinitions>
+              <Grid Grid.Column="0" Margin="0,0,15,0">
+                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <DockPanel Margin="0,0,0,8"><TextBlock Text="发送内容" FontWeight="SemiBold"/><StackPanel DockPanel.Dock="Right" Orientation="Horizontal"><CheckBox x:Name="SerialSendAsHex" Content="HEX 格式" FontSize="12" Margin="0,0,10,0"/><CheckBox x:Name="SerialAutoSend" Content="循环" FontSize="12" Checked="SerialAutoSend_Checked" Unchecked="SerialAutoSend_Unchecked" Margin="0,0,6,0"/><TextBox x:Name="SerialAutoIntervalBox" Width="58" Padding="5,2" Text="1000"/><TextBlock Text=" ms" Foreground="#69788C" FontSize="11" VerticalAlignment="Center"/></StackPanel></DockPanel>
+                <TextBox x:Name="SerialSendBox" Grid.Row="1" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" FontFamily="Consolas" Text="AT" />
+                <Button Grid.Row="2" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left" Margin="0,12,0,0" Click="SerialSendButton_Click">发送数据</Button>
+              </Grid>
+              <Border Grid.Column="1" Background="#10233F" CornerRadius="9" Padding="13">
+                <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><DockPanel><TextBlock Text="收发日志" Foreground="White" FontWeight="SemiBold"/><StackPanel DockPanel.Dock="Right" Orientation="Horizontal"><Button Padding="8,3" Margin="0,0,5,0" Click="SaveSerialLog_Click">保存</Button><Button Padding="8,3" Click="ClearSerialLog_Click">清空</Button></StackPanel></DockPanel><TextBox x:Name="SerialLogBox" Grid.Row="1" Margin="0,10,0,0" Background="Transparent" BorderThickness="0" Foreground="#D5E3FA" FontFamily="Consolas" FontSize="12" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" /></Grid>
+              </Border>
+            </Grid>
+          </Grid>
+        </TabItem>
+
+        <TabItem Header="Modbus RTU">
+          <Grid Margin="16">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <Border Background="#F7F9FC" CornerRadius="9" Padding="13" Margin="0,0,0,12">
+              <WrapPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="端口" Style="{StaticResource Caption}"/><ComboBox x:Name="ModbusPortSelector" Width="102"/></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="波特率" Style="{StaticResource Caption}"/><ComboBox x:Name="ModbusBaudSelector" Width="105" SelectedIndex="0"><ComboBoxItem Content="9600"/><ComboBoxItem Content="19200"/><ComboBoxItem Content="57600"/><ComboBoxItem Content="115200"/></ComboBox></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="数据位" Style="{StaticResource Caption}"/><ComboBox x:Name="ModbusDataBits" Width="75" SelectedIndex="1"><ComboBoxItem Content="7"/><ComboBoxItem Content="8"/></ComboBox></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="校验" Style="{StaticResource Caption}"/><ComboBox x:Name="ModbusParity" Width="90" SelectedIndex="1"><ComboBoxItem Content="None"/><ComboBoxItem Content="Even"/><ComboBoxItem Content="Odd"/></ComboBox></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="停止位" Style="{StaticResource Caption}"/><ComboBox x:Name="ModbusStopBits" Width="75" SelectedIndex="0"><ComboBoxItem Content="1"/><ComboBoxItem Content="2"/></ComboBox></StackPanel>
+                <Button x:Name="ModbusConnectButton" Style="{StaticResource PrimaryButton}" Margin="0,17,0,0" Click="ModbusConnectButton_Click">打开串口</Button>
+                <StackPanel Margin="18,16,0,0"><TextBlock x:Name="ModbusStatusText" Text="未连接" FontSize="12" Foreground="#69788C" /></StackPanel>
+              </WrapPanel>
+            </Border>
+
+            <Border Grid.Row="1" Background="#F7F9FC" CornerRadius="9" Padding="13" Margin="0,0,0,15">
+              <WrapPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="从站地址" Style="{StaticResource Caption}"/><TextBox x:Name="ModbusStationBox" Width="80" Text="1"/></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="功能" Style="{StaticResource Caption}"/><ComboBox x:Name="ModbusFunctionSelector" Width="155" SelectedIndex="0" SelectionChanged="ModbusFunctionSelector_SelectionChanged"><ComboBoxItem Content="读取保持寄存器 (03)"/><ComboBoxItem Content="读取输入寄存器 (04)"/><ComboBoxItem Content="写单个寄存器 (06)"/><ComboBoxItem Content="写多个寄存器 (16)"/></ComboBox></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="起始协议地址（0 基）" Style="{StaticResource Caption}"/><TextBox x:Name="ModbusAddressBox" Width="118" Text="0"/></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock x:Name="ModbusValueCaption" Text="寄存器数量" Style="{StaticResource Caption}"/><TextBox x:Name="ModbusValueBox" Width="118" Text="10"/></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="轮询周期" Style="{StaticResource Caption}"/><DockPanel><TextBox x:Name="ModbusPollIntervalBox" Width="68" Text="1000"/><TextBlock Text=" ms" FontSize="11" Foreground="#69788C" VerticalAlignment="Center"/></DockPanel></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="响应超时" Style="{StaticResource Caption}"/><DockPanel><TextBox x:Name="ModbusTimeoutBox" Width="68" Text="1000"/><TextBlock Text=" ms" FontSize="11" Foreground="#69788C" VerticalAlignment="Center"/></DockPanel></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="地址参考" Style="{StaticResource Caption}"/><TextBlock x:Name="ModbusAddressHint" Width="180" Text="HR40001 · 设备序号 1" FontSize="12" Foreground="#42617F" Margin="0,7,0,0"/></StackPanel>
+                <Button Style="{StaticResource PrimaryButton}" Margin="0,17,8,0" Click="ModbusSendButton_Click">单次执行</Button>
+                <CheckBox x:Name="ModbusAutoPoll" Content="循环读取" Margin="0,22,0,0" FontSize="12" Checked="ModbusAutoPoll_Checked" Unchecked="ModbusAutoPoll_Unchecked"/>
+              </WrapPanel>
+            </Border>
+
+            <Grid Grid.Row="2">
+              <Grid.ColumnDefinitions><ColumnDefinition Width="1.35*"/><ColumnDefinition Width=".85*"/></Grid.ColumnDefinitions>
+              <Border Grid.Column="0" BorderBrush="#E7ECF3" BorderThickness="1" CornerRadius="9" Padding="12" Margin="0,0,15,0">
+                <Grid>
+                  <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                  <DockPanel>
+                    <StackPanel><TextBlock Text="寄存器数据窗口" FontWeight="SemiBold"/><TextBlock Text="协议地址从 0 开始；HR40001 / IR30001 为只读参考映射" FontSize="11" Foreground="#69788C" Margin="0,3,0,0"/></StackPanel>
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center"><Button Padding="9,4" Margin="0,0,6,0" Click="ClearModbusData_Click">清除表格</Button><Button Padding="9,4" Click="WriteSelectedRegister_Click">写入选中</Button></StackPanel>
+                  </DockPanel>
+                  <DataGrid x:Name="ModbusRegisterGrid" Grid.Row="1" Margin="0,12,0,10" ItemsSource="{Binding ModbusRegisters}" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" SelectionMode="Single" SelectionUnit="FullRow" HeadersVisibility="Column" AlternatingRowBackground="#F7F9FC">
+                    <DataGrid.Columns>
+                      <DataGridTextColumn Header="别名" Binding="{Binding Alias, UpdateSourceTrigger=PropertyChanged}" Width="*" />
+                      <DataGridTextColumn Header="协议地址" Binding="{Binding Address}" IsReadOnly="True" Width="86" />
+                      <DataGridTextColumn Header="设备地址" Binding="{Binding DeviceAddress}" IsReadOnly="True" Width="94" />
+                      <DataGridTextColumn Header="数值 (UInt16)" Binding="{Binding Value, UpdateSourceTrigger=LostFocus}" Width="112" />
+                      <DataGridTextColumn Header="HEX" Binding="{Binding HexValue}" IsReadOnly="True" Width="80" />
+                      <DataGridTextColumn Header="状态" Binding="{Binding State}" IsReadOnly="True" Width="78" />
+                      <DataGridTextColumn Header="更新时间" Binding="{Binding UpdatedAt}" IsReadOnly="True" Width="85" />
+                    </DataGrid.Columns>
+                  </DataGrid>
+                  <TextBlock Grid.Row="2" Text="提示：输入寄存器（04）为只读；“写入选中”仅对保持寄存器（03）发送 06 指令。" FontSize="11" Foreground="#69788C" />
+                </Grid>
+              </Border>
+              <Border Grid.Column="1" Background="#10233F" CornerRadius="9" Padding="13">
+                <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><DockPanel><StackPanel Orientation="Horizontal"><TextBlock Text="Modbus 帧日志" Foreground="White" FontWeight="SemiBold"/><TextBlock Text=" · CRC16 小端" Foreground="#91A5C5" FontSize="11"/></StackPanel><StackPanel DockPanel.Dock="Right" Orientation="Horizontal"><Button Padding="8,3" Margin="0,0,5,0" Click="SaveModbusLog_Click">保存</Button><Button Padding="8,3" Click="ClearModbusLog_Click">清空</Button></StackPanel></DockPanel><TextBox x:Name="ModbusLogBox" Grid.Row="1" Margin="0,10,0,0" Background="Transparent" BorderThickness="0" Foreground="#D5E3FA" FontFamily="Consolas" FontSize="12" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" /></Grid>
+              </Border>
+            </Grid>
+          </Grid>
+        </TabItem>
+
+        <TabItem Header="UDP 通讯">
+          <Grid Margin="16">
+            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+            <Border Background="#F7F9FC" CornerRadius="9" Padding="13" Margin="0,0,0,15">
+              <WrapPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="本地监听端口" Style="{StaticResource Caption}"/><TextBox x:Name="UdpLocalPortBox" Width="120" Text="5000"/></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="绑定地址" Style="{StaticResource Caption}"/><ComboBox x:Name="UdpBindSelector" Width="105" SelectedIndex="0"><ComboBoxItem Content="127.0.0.1"/><ComboBoxItem Content="0.0.0.0"/></ComboBox></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="远程 IP / 域名" Style="{StaticResource Caption}"/><TextBox x:Name="UdpHostBox" Width="170" Text="127.0.0.1"/></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="远程端口" Style="{StaticResource Caption}"/><TextBox x:Name="UdpRemotePortBox" Width="105" Text="5001"/></StackPanel>
+                <CheckBox x:Name="UdpBroadcast" Content="允许广播" Margin="0,22,12,0" FontSize="12" />
+                <Button x:Name="UdpStartButton" Style="{StaticResource PrimaryButton}" Margin="0,17,0,0" Click="UdpStartButton_Click">开始监听</Button>
+              </WrapPanel>
+            </Border>
+            <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width=".86*"/><ColumnDefinition Width="1.14*"/></Grid.ColumnDefinitions>
+              <Grid Grid.Column="0" Margin="0,0,15,0"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><DockPanel Margin="0,0,0,8"><TextBlock Text="UDP 数据报" FontWeight="SemiBold"/><CheckBox x:Name="UdpSendAsHex" DockPanel.Dock="Right" Content="HEX 格式" FontSize="12"/></DockPanel><TextBox x:Name="UdpSendBox" Grid.Row="1" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" FontFamily="Consolas" Text="Hello UDP"/><Button Grid.Row="2" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left" Margin="0,12,0,0" Click="UdpSendButton_Click">发送数据报</Button></Grid>
+              <Border Grid.Column="1" Background="#10233F" CornerRadius="9" Padding="13"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><DockPanel><TextBlock Text="UDP 收发日志" Foreground="White" FontWeight="SemiBold"/><StackPanel DockPanel.Dock="Right" Orientation="Horizontal"><Button Padding="8,3" Margin="0,0,5,0" Click="SaveUdpLog_Click">保存</Button><Button Padding="8,3" Click="ClearUdpLog_Click">清空</Button></StackPanel></DockPanel><TextBox x:Name="UdpLogBox" Grid.Row="1" Margin="0,10,0,0" Background="Transparent" BorderThickness="0" Foreground="#D5E3FA" FontFamily="Consolas" FontSize="12" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" /></Grid></Border>
+            </Grid>
+          </Grid>
+        </TabItem>
+      </TabControl>
+    </Border>
+  </Grid>
+</UserControl>

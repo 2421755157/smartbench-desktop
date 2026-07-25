@@ -1,0 +1,14 @@
+# .NET / WPF build outputs
+[Bb]in/
+[Oo]bj/
+publish/
+
+# Visual Studio and user-specific files
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Local intermediate asset; the application uses smartbench-icon.png and .ico.
+Assets/smartbench-icon-chromakey.png
