@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
+using System.Management;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -13,27 +15,48 @@ namespace SmartBench.Views;
 
 public partial class UsbTransferView : UserControl, IDisposable
 {
+    private const uint SHFMT_ID_DEFAULT = 0xFFFF;
+    private const uint SHFMT_CANCEL = 0xFFFFFFFE;
+    private const uint SHFMT_NOFORMAT = 0xFFFFFFFD;
+    private const uint SHFMT_ERROR = 0xFFFFFFFF;
+
+    [DllImport("shell32.dll")]
+    private static extern uint SHFormatDrive(IntPtr hwnd, uint drive, uint fmtId, uint options);
+
     public ObservableCollection<UsbDriveItem> Drives { get; } = [];
     public ObservableCollection<TransferFileItem> TransferFiles { get; } = [];
-    public ObservableCollection<UploadNode> UploadItems { get; } = [];
 
     private readonly DispatcherTimer _driveRefreshTimer;
+    private readonly DispatcherTimer _taskTimer;
+    private readonly Stopwatch _taskStopwatch = new();
     private readonly HashSet<string> _uploadedRoots = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _autoFormatAttempts = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _transferFilePaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _transferDirectoryPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<ScannedDirectory> _transferDirectories = [];
     private CancellationTokenSource? _transferCancellation;
+    private readonly AppSettings _settings;
+    private long _copiedBytes;
+    private long _totalBytes;
+    private int _formatDone;
+    private int _formatTotal;
+    private bool _isFormatting;
     private bool _isTransferring;
+    private bool _isLoadingFiles;
     private bool _disposed;
 
     public UsbTransferView()
     {
         InitializeComponent();
         DataContext = this;
+        _settings = AppSettings.Load();
+        AutoFormatCheck.IsChecked = _settings.AutoFormatNotReady;
         RefreshDrives();
         _driveRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
-        _driveRefreshTimer.Tick += (_, _) => { if (!_isTransferring) RefreshDrives(); };
+        _driveRefreshTimer.Tick += (_, _) => { if (!_isTransferring && !_isFormatting) RefreshDrives(); };
         _driveRefreshTimer.Start();
+        _taskTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _taskTimer.Tick += (_, _) => UpdateTaskTimeText();
     }
 
     private void RefreshDrives_Click(object sender, RoutedEventArgs e) => RefreshDrives();
@@ -55,7 +78,8 @@ public partial class UsbTransferView : UserControl, IDisposable
                         Label = "可移动设备",
                         State = "需格式化或不可读取",
                         FreeBytes = 0,
-                        IsReady = false
+                        IsReady = false,
+                        IsSelected = selectedRoots.Contains(drive.Name)
                     });
                     continue;
                 }
@@ -81,7 +105,8 @@ public partial class UsbTransferView : UserControl, IDisposable
                     Label = "可移动设备",
                     State = "需格式化或不可读取",
                     FreeBytes = 0,
-                    IsReady = false
+                    IsReady = false,
+                    IsSelected = selectedRoots.Contains(drive.Name)
                 });
             }
             catch (UnauthorizedAccessException)
@@ -93,7 +118,8 @@ public partial class UsbTransferView : UserControl, IDisposable
                     Label = "可移动设备",
                     State = "访问受限",
                     FreeBytes = 0,
-                    IsReady = false
+                    IsReady = false,
+                    IsSelected = selectedRoots.Contains(drive.Name)
                 });
             }
         }
@@ -106,6 +132,23 @@ public partial class UsbTransferView : UserControl, IDisposable
             >= 10 => "已显示前 10 个可移动设备",
             _ => $"已识别 {discovered.Count} 个可移动设备"
         };
+        var notReadyCount = discovered.Count(device => !device.IsReady);
+        UsbHintText.Text = notReadyCount == 0
+            ? "所有设备状态正常。勾选设备与文件后点击“批量下发”即可开始复制。"
+            : $"检测到 {notReadyCount} 个设备需要格式化（该状态下无法下发）：勾选它们后点击“批量格式化”即可并行处理，格式化完成会自动变为“可用”；也可开启“插入需格式化 U 盘时自动格式化”由软件代劳。";
+
+        if (AutoFormatCheck.IsChecked == true && !_isTransferring && !_isFormatting)
+        {
+            var pending = discovered
+                .Where(device => !device.IsReady)
+                .Where(device =>
+                {
+                    _autoFormatAttempts.TryGetValue(device.RootPath, out var attempts);
+                    return attempts < 3;
+                })
+                .ToArray();
+            if (pending.Length > 0) _ = AutoFormatPendingAsync(pending);
+        }
     }
 
     private async void AddFolder_Click(object sender, RoutedEventArgs e)
@@ -127,12 +170,293 @@ public partial class UsbTransferView : UserControl, IDisposable
 
     private void SelectAllDrives_Click(object sender, RoutedEventArgs e)
     {
-        foreach (var drive in Drives.Where(drive => drive.IsReady)) drive.IsSelected = true;
+        foreach (var drive in Drives) drive.IsSelected = true;
+    }
+
+    private void SettingCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        _settings.AutoFormatNotReady = AutoFormatCheck.IsChecked == true;
+        _settings.Save();
     }
 
     private void ClearDriveSelection_Click(object sender, RoutedEventArgs e)
     {
         foreach (var drive in Drives) drive.IsSelected = false;
+    }
+
+    private void FormatDrive_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: UsbDriveItem drive }) return;
+        if (_isTransferring || _isFormatting)
+        {
+            MessageBox.Show("有任务正在执行，不能格式化设备。", "格式化 U 盘", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var driveLetter = char.ToUpperInvariant(drive.RootPath.FirstOrDefault());
+        if (driveLetter is < 'A' or > 'Z')
+        {
+            MessageBox.Show($"无法识别设备盘符：{drive.RootPath}", "格式化 U 盘", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var stateHint = drive.IsReady
+            ? $"设备：{drive.RootPath}（{drive.Label}）"
+            : $"设备：{drive.RootPath}（当前不可读取，可能需要格式化）";
+        var approval = MessageBox.Show(
+            $"{stateHint}\n\n格式化将清除该 U 盘上的全部数据，且无法恢复！\n确认继续吗？",
+            "格式化 U 盘", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+        if (approval != MessageBoxResult.Yes) return;
+
+        var owner = Window.GetWindow(this);
+        var hwnd = owner is null ? IntPtr.Zero : new System.Windows.Interop.WindowInteropHelper(owner).Handle;
+        var result = SHFormatDrive(hwnd, (uint)(driveLetter - 'A'), SHFMT_ID_DEFAULT, 0);
+        RefreshDrives();
+        if (result == SHFMT_CANCEL) return;
+        if (result is SHFMT_ERROR or SHFMT_NOFORMAT)
+        {
+            MessageBox.Show(result == SHFMT_NOFORMAT
+                ? $"{drive.RootPath} 无法完成格式化，设备可能已损坏或被写保护。"
+                : "格式化过程发生错误，请重试或更换设备。", "格式化 U 盘", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        TransferStatus.Text = $"{drive.RootPath} 格式化完成。";
+    }
+
+    private async void BatchFormat_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isTransferring || _isFormatting)
+        {
+            MessageBox.Show("有任务正在执行，请等待完成后再试。", "批量格式化", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var targets = Drives.Where(drive => drive.IsSelected).ToArray();
+        var autoSelected = false;
+        if (targets.Length == 0 && Drives.Count > 0)
+        {
+            targets = Drives.ToArray();
+            autoSelected = true;
+        }
+        if (targets.Length == 0)
+        {
+            MessageBox.Show("当前没有已识别的可移动设备。", "批量格式化", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var listing = string.Join("\n", targets.Select(target => target.IsReady
+            ? $"  {target.RootPath}（{target.Label}，{UsbDriveItem.FormatSize(target.FreeBytes)} 可用）"
+            : $"  {target.RootPath}（需格式化或不可读取）"));
+        var approval = MessageBox.Show(
+            (autoSelected ? $"未勾选任何设备，已自动全选。\n\n" : "") +
+            $"将对以下 {targets.Length} 个 U 盘执行快速格式化：\n\n{listing}\n\n" +
+            "文件系统默认 FAT32（容量大于 32GB 时使用 exFAT；容量无法读取时也使用 FAT32）。\n\n" +
+            "格式化将清除这些 U 盘上的全部数据，且无法恢复！确认继续吗？",
+            "批量格式化确认", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+        if (approval != MessageBoxResult.Yes) return;
+
+        var failures = await RunBatchFormatCoreAsync(targets, "批量格式化");
+        var resultMessage = failures.Count == 0
+            ? $"全部 {targets.Length} 个 U 盘已格式化完成。请在系统中安全弹出后再拔出。"
+            : $"已完成 {targets.Length - failures.Count} 个设备；以下设备格式化失败：\n\n{string.Join("\n", failures)}";
+        MessageBox.Show(resultMessage, failures.Count == 0 ? "批量格式化完成" : "批量格式化结果", MessageBoxButton.OK, failures.Count == 0 ? MessageBoxImage.Information : MessageBoxImage.Warning);
+    }
+
+    private async Task<List<string>> RunBatchFormatCoreAsync(IReadOnlyList<UsbDriveItem> targets, string label)
+    {
+        _isFormatting = true;
+        _formatTotal = targets.Count;
+        _formatDone = 0;
+        TransferProgress.Maximum = targets.Count;
+        TransferProgress.Value = 0;
+        StartTransferButton.IsEnabled = false;
+        _taskStopwatch.Restart();
+        _taskTimer.Start();
+        UpdateTaskTimeText();
+        List<string> failures;
+
+        try
+        {
+            failures = await Task.Run(async () =>
+            {
+                var failureList = new List<string>();
+                var syncLock = new object();
+                var tasks = targets.Select(async (target, index) =>
+                {
+                    try
+                    {
+                        if (index > 0) await Task.Delay(index * 400);
+                        await FormatRemovableAsync(target.RootPath);
+                    }
+                    catch (Exception exception)
+                    {
+                        lock (syncLock) failureList.Add($"{target.RootPath}：{exception.Message}");
+                    }
+                    finally
+                    {
+                        var done = Interlocked.Increment(ref _formatDone);
+                        _ = Dispatcher.InvokeAsync(() =>
+                        {
+                            TransferStatus.Text = $"正在格式化（{done}/{targets.Count}，并行执行）…";
+                            TransferProgress.Value = done;
+                        });
+                    }
+                }).ToArray();
+                await Task.WhenAll(tasks);
+                return failureList;
+            });
+
+            TransferProgress.Value = targets.Count;
+            TransferStatus.Text = failures.Count == 0
+                ? $"{label}完成：{targets.Count} 个设备全部成功。"
+                : $"{label}完成 {targets.Count - failures.Count}/{targets.Count} 个设备";
+        }
+        finally
+        {
+            _taskTimer.Stop();
+            _taskStopwatch.Stop();
+            _formatTotal = 0;
+            _isFormatting = false;
+            TransferProgress.Maximum = 100;
+            TransferProgress.Value = 0;
+            TransferTimeText.Text = $"上次任务用时 {_taskStopwatch.Elapsed:hh\\:mm\\:ss}";
+            StartTransferButton.IsEnabled = true;
+            RefreshDrives();
+        }
+        return failures;
+    }
+
+    private async Task AutoFormatPendingAsync(UsbDriveItem[] targets)
+    {
+        try
+        {
+            foreach (var target in targets)
+            {
+                _autoFormatAttempts[target.RootPath] = _autoFormatAttempts.GetValueOrDefault(target.RootPath) + 1;
+            }
+
+            var failures = await RunBatchFormatCoreAsync(targets, "自动格式化");
+            foreach (var target in targets)
+            {
+                if (!failures.Any(failure => failure.StartsWith(target.RootPath, StringComparison.OrdinalIgnoreCase)))
+                    _autoFormatAttempts.Remove(target.RootPath);
+            }
+            TransferStatus.Text = failures.Count == 0
+                ? $"自动格式化完成：{string.Join("、", targets.Select(target => target.RootPath))}，设备已可读取。"
+                : $"自动格式化完成 {targets.Length - failures.Count}/{targets.Length} 个设备；失败：{string.Join("；", failures)}（失败设备将在下轮自动重试，最多 3 次）";
+        }
+        catch (Exception exception)
+        {
+            TransferStatus.Text = $"自动格式化未完成：{exception.Message}";
+        }
+    }
+
+    private static async Task FormatRemovableAsync(string rootPath)
+    {
+        var letter = rootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (letter.Length != 2 || letter[1] != ':')
+            throw new InvalidOperationException($"无法识别的盘符：{rootPath}");
+
+        var totalBytes = GetVolumeCapacityBytes(letter);
+        var fileSystem = totalBytes > 32L * 1024 * 1024 * 1024 ? "exFAT" : "FAT32";
+
+        var startInfo = new ProcessStartInfo("format.com", $"{letter} /FS:{fileSystem} /Q /V: /Y /X")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 format.com。");
+        var outputTask = process.StandardOutput.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        var output = (await outputTask).Trim();
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException($"{fileSystem} 快速格式化失败{(string.IsNullOrWhiteSpace(output) ? "" : $"：{output.Split('\n').LastOrDefault(line => !string.IsNullOrWhiteSpace(line))}")}");
+    }
+
+    private static long GetVolumeCapacityBytes(string letter)
+    {
+        try { return new DriveInfo(letter).TotalSize; }
+        catch { }
+
+        try
+        {
+            using var volumes = new ManagementObjectSearcher($"SELECT Size FROM Win32_LogicalDisk WHERE DeviceID='{letter}'").Get();
+            foreach (var volume in volumes)
+            {
+                if (ulong.TryParse(volume["Size"]?.ToString(), out var size) && size > 0) return (long)size;
+            }
+        }
+        catch { }
+
+        try
+        {
+            var deviceId = GetDiskDriveDeviceId(letter + "\\");
+            if (deviceId is not null)
+            {
+                using var disks = new ManagementObjectSearcher("SELECT PNPDeviceID, Size FROM Win32_DiskDrive").Get();
+                foreach (var disk in disks)
+                {
+                    if (string.Equals(disk["PNPDeviceID"]?.ToString(), deviceId, StringComparison.OrdinalIgnoreCase)
+                        && ulong.TryParse(disk["Size"]?.ToString(), out var size) && size > 0)
+                        return (long)size;
+                }
+            }
+        }
+        catch { }
+
+        return -1;
+    }
+
+    private static string? GetDiskDriveDeviceId(string rootPath)
+    {
+        var letter = rootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        using var partitions = new ManagementObjectSearcher(
+            $"ASSOCIATORS OF {{Win32_LogicalDisk.DeviceID='{letter}'}} WHERE AssocClass = Win32_LogicalDiskToPartition").Get();
+        foreach (var partition in partitions)
+        {
+            var partitionId = partition["DeviceID"]?.ToString();
+            if (string.IsNullOrWhiteSpace(partitionId)) continue;
+            using var disks = new ManagementObjectSearcher(
+                $"ASSOCIATORS OF {{Win32_DiskPartition.DeviceID='{partitionId}'}} WHERE AssocClass = Win32_DiskDriveToDiskPartition").Get();
+            foreach (var disk in disks)
+            {
+                var pnpDeviceId = disk["PNPDeviceID"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(pnpDeviceId)) return pnpDeviceId;
+            }
+        }
+        return null;
+    }
+
+    private void UpdateTaskTimeText()
+    {
+        var elapsed = _taskStopwatch.Elapsed;
+        if (_formatTotal > 0)
+        {
+            var doneCount = Math.Min(_formatDone, _formatTotal);
+            var remainingText = "估算中…";
+            if (doneCount > 0)
+            {
+                var average = TimeSpan.FromTicks(elapsed.Ticks / doneCount);
+                remainingText = $"剩余约 {TimeSpan.FromTicks(average.Ticks * (_formatTotal - doneCount)):hh\\:mm\\:ss}";
+            }
+            TransferTimeText.Text = $"已用 {elapsed:hh\\:mm\\:ss} · {remainingText} · 已完成 {doneCount}/{_formatTotal} 台";
+            return;
+        }
+
+        var totalBytes = Interlocked.Read(ref _totalBytes);
+        var copiedBytes = Interlocked.Read(ref _copiedBytes);
+        var remaining = "…";
+        if (totalBytes > 0 && copiedBytes > 0 && elapsed.TotalSeconds > 0)
+        {
+            var rate = copiedBytes / elapsed.TotalSeconds;
+            if (rate > 0 && copiedBytes < totalBytes)
+                remaining = $"剩余约 {TimeSpan.FromSeconds(Math.Max(0, (totalBytes - copiedBytes) / rate)):hh\\:mm\\:ss}";
+            else if (copiedBytes >= totalBytes)
+                remaining = "即将完成";
+        }
+        TransferTimeText.Text = $"已用 {elapsed:hh\\:mm\\:ss} · {remaining}";
     }
 
     private void DropSurface_DragEnter(object sender, DragEventArgs e)
@@ -164,48 +488,51 @@ public partial class UsbTransferView : UserControl, IDisposable
 
     private async Task AddUploadPathsAsync(IEnumerable<string> rawPaths)
     {
-        if (_isTransferring) return;
+        if (_isTransferring || _isLoadingFiles) return;
         var paths = rawPaths.Where(path => File.Exists(path) || Directory.Exists(path)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         if (paths.Length == 0) return;
 
-        TransferSummary.Text = "正在读取文件与目录结构…";
-        var scan = await Task.Run(() => ScanUploadPaths(paths));
-        var addedRoots = 0;
-        var addedFiles = 0;
-        var addedDirectories = 0;
-
-        foreach (var root in scan.Roots)
+        _isLoadingFiles = true;
+        try
         {
-            if (!_uploadedRoots.Add(root)) continue;
-            UploadItems.Add(CreateNode(root));
-            addedRoots++;
-        }
+            TransferSummary.Text = "正在读取文件与目录结构…";
+            var scan = await Task.Run(() => ScanUploadPaths(paths));
+            var addedFiles = 0;
+            var addedDirectories = 0;
 
-        foreach (var directory in scan.Directories)
-        {
-            if (!_transferDirectoryPaths.Add(directory.DestinationRelativePath)) continue;
-            _transferDirectories.Add(directory);
-            addedDirectories++;
-        }
-
-        foreach (var file in scan.Files)
-        {
-            if (!_transferFilePaths.Add(file.FullPath)) continue;
-            TransferFiles.Add(new TransferFileItem
+            foreach (var root in scan.Roots)
             {
-                FullPath = file.FullPath,
-                Name = Path.GetFileName(file.FullPath),
-                DestinationRelativePath = file.DestinationRelativePath,
-                SizeBytes = file.SizeBytes
-            });
-            addedFiles++;
-        }
+                _uploadedRoots.Add(root);
+            }
 
-        UpdateTransferSummary();
-        if (addedFiles > 0 || addedDirectories > 0)
-            TransferStatus.Text = $"已添加 {addedFiles} 个文件、{addedDirectories} 个文件夹；可在“待下发文件”中调整选择。";
-        else if (addedRoots > 0)
-            TransferStatus.Text = "已添加内容，但没有可读取的文件或文件夹。";
+            foreach (var directory in scan.Directories)
+            {
+                if (!_transferDirectoryPaths.Add(directory.DestinationRelativePath)) continue;
+                _transferDirectories.Add(directory);
+                addedDirectories++;
+            }
+
+            foreach (var file in scan.Files)
+            {
+                if (!_transferFilePaths.Add(file.FullPath)) continue;
+                TransferFiles.Add(new TransferFileItem
+                {
+                    FullPath = file.FullPath,
+                    Name = Path.GetFileName(file.FullPath),
+                    DestinationRelativePath = file.DestinationRelativePath,
+                    SizeBytes = file.SizeBytes
+                });
+                addedFiles++;
+            }
+
+            UpdateTransferSummary();
+            TransferProgress.Value = 0;
+            TransferTimeText.Text = "";
+        }
+        finally
+        {
+            _isLoadingFiles = false;
+        }
     }
 
     private static ScanResult ScanUploadPaths(IEnumerable<string> paths)
@@ -213,7 +540,7 @@ public partial class UsbTransferView : UserControl, IDisposable
         var roots = new List<string>();
         var directories = new List<ScannedDirectory>();
         var files = new List<ScannedFile>();
-        var options = new EnumerationOptions
+        var options = new System.IO.EnumerationOptions
         {
             RecurseSubdirectories = true,
             IgnoreInaccessible = true,
@@ -274,67 +601,18 @@ public partial class UsbTransferView : UserControl, IDisposable
         catch (UnauthorizedAccessException) { }
     }
 
-    private static UploadNode CreateNode(string path)
-    {
-        var node = new UploadNode(path, Directory.Exists(path));
-        if (node.IsDirectory && HasChildren(path)) node.Children.Add(new UploadNode(path, false, true));
-        return node;
-    }
-
-    private static bool HasChildren(string path)
-    {
-        try { return Directory.EnumerateFileSystemEntries(path).Take(1).Any(); }
-        catch { return false; }
-    }
-
-    private void UploadTreeItem_Expanded(object sender, RoutedEventArgs e)
-    {
-        if (e.OriginalSource is not TreeViewItem item || item.DataContext is not UploadNode node || !node.IsDirectory) return;
-        if (node.Children.Count != 1 || !node.Children[0].IsPlaceholder) return;
-
-        node.Children.Clear();
-        try
-        {
-            var directories = Directory.EnumerateDirectories(node.FullPath).OrderBy(path => path, StringComparer.CurrentCultureIgnoreCase);
-            var files = Directory.EnumerateFiles(node.FullPath).OrderBy(path => path, StringComparer.CurrentCultureIgnoreCase);
-            foreach (var directory in directories) node.Children.Add(CreateNode(directory));
-            foreach (var file in files) node.Children.Add(CreateNode(file));
-        }
-        catch (UnauthorizedAccessException) { node.Children.Add(new UploadNode("无法访问此文件夹", false)); }
-        catch (IOException) { node.Children.Add(new UploadNode("无法读取此文件夹", false)); }
-    }
-
-    private void UploadTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
-    {
-        UploadPathText.Text = e.NewValue is UploadNode node ? node.FullPath : "选择一个内容项可查看完整路径";
-    }
-
-    private void OpenSelectedUpload_Click(object sender, RoutedEventArgs e)
-    {
-        if (UploadTree.SelectedItem is not UploadNode node || node.IsPlaceholder || (!File.Exists(node.FullPath) && !Directory.Exists(node.FullPath))) return;
-        try
-        {
-            Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{node.FullPath}\"") { UseShellExecute = true });
-        }
-        catch (Exception exception)
-        {
-            MessageBox.Show(exception.Message, "无法打开位置", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-    }
-
     private void ClearUpload_Click(object sender, RoutedEventArgs e)
     {
         if (_isTransferring) return;
-        UploadItems.Clear();
         TransferFiles.Clear();
         _uploadedRoots.Clear();
         _transferFilePaths.Clear();
         _transferDirectoryPaths.Clear();
         _transferDirectories.Clear();
-        UploadPathText.Text = "选择一个内容项可查看完整路径";
         TransferSummary.Text = "拖入文件或文件夹，支持任意格式并保留目录层级";
-        TransferStatus.Text = "已清空待下发内容";
+        TransferStatus.Text = "等待选择设备与内容";
         TransferProgress.Value = 0;
+        TransferTimeText.Text = "";
     }
 
     private void SelectAllFiles_Click(object sender, RoutedEventArgs e)
@@ -361,12 +639,12 @@ public partial class UsbTransferView : UserControl, IDisposable
         var totalBytes = TransferFiles.Sum(file => file.SizeBytes);
         TransferSummary.Text = TransferFiles.Count == 0 && _transferDirectories.Count == 0
             ? "拖入文件或文件夹，支持任意格式并保留目录层级"
-            : $"已载入 {TransferFiles.Count} 个文件、{_transferDirectories.Count} 个文件夹 · {UsbDriveItem.FormatSize(totalBytes)} · {UploadItems.Count} 个根项目";
+            : $"已载入 {TransferFiles.Count} 个文件、{_transferDirectories.Count} 个文件夹 · 合计 {UsbDriveItem.FormatSize(totalBytes)}";
     }
 
     private async void StartTransferButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_isTransferring) return;
+        if (_isTransferring || _isFormatting) return;
         var targets = Drives.Where(drive => drive.IsSelected && drive.IsReady).ToArray();
         var files = TransferFiles.Where(file => file.IsSelected).ToArray();
         var directories = _transferDirectories.ToArray();
@@ -395,7 +673,12 @@ public partial class UsbTransferView : UserControl, IDisposable
         CancelTransferButton.IsEnabled = true;
         TransferProgress.Value = 0;
         var totalBytes = bytesPerDrive * targets.Length;
-        var copiedBytes = 0L;
+        var cancellationToken = _transferCancellation.Token;
+        _copiedBytes = 0;
+        _totalBytes = totalBytes;
+        _taskStopwatch.Restart();
+        _taskTimer.Start();
+        UpdateTaskTimeText();
 
         try
         {
@@ -403,10 +686,10 @@ public partial class UsbTransferView : UserControl, IDisposable
             {
                 var failures = new List<string>();
                 var skippedItems = new List<string>();
+                var syncLock = new object();
                 var completedDevices = 0;
-                foreach (var target in targets)
+                var tasks = targets.Select(async target =>
                 {
-                    _transferCancellation.Token.ThrowIfCancellationRequested();
                     try
                     {
                         ValidateTargetForWrite(target, bytesPerDrive);
@@ -417,46 +700,53 @@ public partial class UsbTransferView : UserControl, IDisposable
 
                         foreach (var directory in directories)
                         {
-                            _transferCancellation.Token.ThrowIfCancellationRequested();
+                            cancellationToken.ThrowIfCancellationRequested();
                             if (IsInBlockedFolderRoot(directory.DestinationRelativePath, blockedFolderRoots)) continue;
                             Directory.CreateDirectory(BuildSafeDestinationPath(destinationRoot, directory.DestinationRelativePath));
                         }
 
                         foreach (var file in files)
                         {
-                            _transferCancellation.Token.ThrowIfCancellationRequested();
+                            cancellationToken.ThrowIfCancellationRequested();
                             if (IsInBlockedFolderRoot(file.DestinationRelativePath, blockedFolderRoots))
                             {
-                                skippedItems.Add($"{target.RootPath}：文件夹“{TopLevelSegment(file.DestinationRelativePath)}”已存在，跳过其中内容。");
+                                lock (syncLock) skippedItems.Add($"{target.RootPath}：文件夹“{TopLevelSegment(file.DestinationRelativePath)}”已存在，跳过其中内容。");
                                 continue;
                             }
                             var destinationPath = BuildSafeDestinationPath(destinationRoot, file.DestinationRelativePath);
                             if (File.Exists(destinationPath) || Directory.Exists(destinationPath))
                             {
-                                skippedItems.Add($"{target.RootPath}：同名项“{file.DestinationRelativePath}”已存在，已跳过。");
+                                lock (syncLock) skippedItems.Add($"{target.RootPath}：同名项“{file.DestinationRelativePath}”已存在，已跳过。");
                                 continue;
                             }
                             Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
-                            ReportTransfer($"正在复制到 {target.RootPath}：{file.Name}", copiedBytes, totalBytes);
                             await CopyFileSafelyAsync(file.FullPath, destinationPath, count =>
                             {
-                                var completed = Interlocked.Add(ref copiedBytes, count);
-                                ReportTransfer($"正在复制到 {target.RootPath}：{file.Name}", completed, totalBytes);
-                            }, _transferCancellation.Token);
+                                var completed = Interlocked.Add(ref _copiedBytes, count);
+                                ReportTransfer($"并行下发中 · 已复制 {UsbDriveItem.FormatSize(completed)} / {UsbDriveItem.FormatSize(totalBytes)}", completed, totalBytes);
+                            }, cancellationToken);
                         }
-                        completedDevices++;
+                        Interlocked.Increment(ref completedDevices);
                     }
                     catch (OperationCanceledException) { throw; }
                     catch (Exception exception)
                     {
-                        failures.Add($"{target.RootPath}：{exception.Message}");
-                        ReportTransfer($"{target.RootPath} 下发失败，继续处理其他设备", copiedBytes, totalBytes);
+                        lock (syncLock) failures.Add($"{target.RootPath}：{exception.Message}");
+                        ReportTransfer($"并行下发中 · 已复制 {UsbDriveItem.FormatSize(Interlocked.Read(ref _copiedBytes))} / {UsbDriveItem.FormatSize(totalBytes)}（{target.RootPath} 失败）", Interlocked.Read(ref _copiedBytes), totalBytes);
                     }
-                }
+                }).ToArray();
+
+                try { await Task.WhenAll(tasks); }
+                catch (OperationCanceledException) { }
+                catch { /* 单设备失败已在上方记录，其余设备继续 */ }
+
+                if (cancellationToken.IsCancellationRequested)
+                    cancellationToken.ThrowIfCancellationRequested();
+
                 return new TransferOutcome(completedDevices, failures, skippedItems);
             });
 
-            TransferProgress.Value = totalBytes == 0 ? 100 : Math.Min(100, 100d * copiedBytes / totalBytes);
+            TransferProgress.Value = totalBytes == 0 ? 100 : Math.Min(100, 100d * Interlocked.Read(ref _copiedBytes) / totalBytes);
             TransferStatus.Text = outcome.Failures.Count == 0
                 ? outcome.SkippedItems.Count == 0
                     ? $"已完成：{outcome.CompletedDevices} 个设备 · {files.Length} 个文件 · {directories.Length} 个文件夹"
@@ -484,6 +774,10 @@ public partial class UsbTransferView : UserControl, IDisposable
             _transferCancellation?.Dispose();
             _transferCancellation = null;
             _isTransferring = false;
+            _taskTimer.Stop();
+            _taskStopwatch.Stop();
+            TransferProgress.Value = 0;
+            TransferTimeText.Text = $"上次任务用时 {_taskStopwatch.Elapsed:hh\\:mm\\:ss}";
             StartTransferButton.IsEnabled = true;
             CancelTransferButton.IsEnabled = false;
         }
@@ -563,6 +857,7 @@ public partial class UsbTransferView : UserControl, IDisposable
                     onBytesCopied(read);
                 }
                 await destinationStream.FlushAsync(cancellationToken);
+                destinationStream.Flush(flushToDisk: true);
             }
             File.Move(temporary, target);
         }
@@ -587,6 +882,7 @@ public partial class UsbTransferView : UserControl, IDisposable
         if (_disposed) return;
         _disposed = true;
         _driveRefreshTimer.Stop();
+        _taskTimer.Stop();
         _transferCancellation?.Cancel();
         _transferCancellation?.Dispose();
     }

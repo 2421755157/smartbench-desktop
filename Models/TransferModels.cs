@@ -66,29 +66,3 @@ public sealed class TransferFileItem : INotifyPropertyChanged
     private void OnPropertyChanged([CallerMemberName] string? name = null) =>
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
-
-public sealed class UploadNode
-{
-    public UploadNode(string fullPath, bool isDirectory, bool isPlaceholder = false)
-    {
-        FullPath = fullPath;
-        IsDirectory = isDirectory;
-        IsPlaceholder = isPlaceholder;
-        DisplayName = isPlaceholder ? "正在加载…" : Path.GetFileName(fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-        if (string.IsNullOrWhiteSpace(DisplayName)) DisplayName = fullPath;
-    }
-
-    public string FullPath { get; }
-    public string DisplayName { get; }
-    public bool IsDirectory { get; }
-    public bool IsPlaceholder { get; }
-    public ObservableCollection<UploadNode> Children { get; } = [];
-    public string Icon => IsDirectory ? "▸" : "•";
-    public string Detail => IsDirectory ? "文件夹" : GetFileDetail();
-
-    private string GetFileDetail()
-    {
-        try { return UsbDriveItem.FormatSize(new FileInfo(FullPath).Length); }
-        catch { return "无法读取"; }
-    }
-}

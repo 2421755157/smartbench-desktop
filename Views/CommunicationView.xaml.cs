@@ -334,11 +334,11 @@ public partial class CommunicationView : UserControl, IDisposable
         if (_modbusPort?.IsOpen != true)
             throw new InvalidOperationException("请先打开 Modbus 串口。");
 
-        var station = byte.Parse(ModbusStationBox.Text);
-        if (station is 0 or > 247)
-            throw new ArgumentOutOfRangeException(nameof(station), "读取和本工具的写入操作仅允许从站地址 1 到 247。地址 0 为广播地址，不在此处使用。");
+        if (!byte.TryParse(ModbusStationBox.Text.Trim(), out var station) || station is 0 or > 247)
+            throw new InvalidOperationException("从站地址需为 1 到 247 的数字。地址 0 为广播地址，不在此处使用。");
 
-        var address = ushort.Parse(ModbusAddressBox.Text);
+        if (!ushort.TryParse(ModbusAddressBox.Text.Trim(), out var address))
+            throw new InvalidOperationException("寄存器地址需为 0 到 65,535 的数字。");
         var function = ModbusFunctionSelector.SelectedIndex switch
         {
             0 => (byte)0x03,
@@ -355,16 +355,22 @@ public partial class CommunicationView : UserControl, IDisposable
         switch (function)
         {
             case 0x03:
-                quantity = ushort.Parse(ModbusValueBox.Text);
+                if (!ushort.TryParse(ModbusValueBox.Text.Trim(), out var readQuantity) || readQuantity is 0 or > 125)
+                    throw new InvalidOperationException("寄存器数量需为 1 到 125 的数字。");
+                quantity = readQuantity;
                 frame = ModbusRtu.ReadHoldingRegisters(station, address, quantity);
                 break;
             case 0x04:
-                quantity = ushort.Parse(ModbusValueBox.Text);
+                if (!ushort.TryParse(ModbusValueBox.Text.Trim(), out readQuantity) || readQuantity is 0 or > 125)
+                    throw new InvalidOperationException("寄存器数量需为 1 到 125 的数字。");
+                quantity = readQuantity;
                 frame = ModbusRtu.ReadInputRegisters(station, address, quantity);
                 break;
             case 0x06:
+                if (!ushort.TryParse(ModbusValueBox.Text.Trim(), out var writeValue))
+                    throw new InvalidOperationException("写入数值需为 0 到 65,535 的数字。");
                 quantity = 1;
-                frame = ModbusRtu.WriteSingleRegister(station, address, ushort.Parse(ModbusValueBox.Text));
+                frame = ModbusRtu.WriteSingleRegister(station, address, writeValue);
                 break;
             case 0x10:
                 var values = ParseRegisterValues(ModbusValueBox.Text);
@@ -615,7 +621,8 @@ public partial class CommunicationView : UserControl, IDisposable
 
         try
         {
-            var localPort = int.Parse(UdpLocalPortBox.Text);
+            if (!int.TryParse(UdpLocalPortBox.Text.Trim(), out var localPort) || localPort is < 1 or > 65535)
+                throw new InvalidOperationException("本地端口需为 1 到 65535 的数字。");
             var bindAddress = IPAddress.Parse(ComboText(UdpBindSelector));
             _udpClient = new UdpClient(new IPEndPoint(bindAddress, localPort));
             _udpCancellation = new CancellationTokenSource();
@@ -654,12 +661,16 @@ public partial class CommunicationView : UserControl, IDisposable
     {
         try
         {
-            var port = int.Parse(UdpRemotePortBox.Text);
+            var host = UdpHostBox.Text.Trim();
+            if (host.Length == 0)
+                throw new InvalidOperationException("请填写目标主机地址或主机名。");
+            if (!int.TryParse(UdpRemotePortBox.Text.Trim(), out var port) || port is < 1 or > 65535)
+                throw new InvalidOperationException("目标端口需为 1 到 65535 的数字。");
             var payload = UdpSendAsHex.IsChecked == true ? HexCodec.Parse(UdpSendBox.Text) : Encoding.UTF8.GetBytes(UdpSendBox.Text);
             if (payload.Length > 65_507) throw new InvalidOperationException("UDP 单个数据报不能超过 65,507 字节。");
             using var senderClient = new UdpClient { EnableBroadcast = UdpBroadcast.IsChecked == true };
-            await senderClient.SendAsync(payload, payload.Length, UdpHostBox.Text.Trim(), port);
-            AppendLog(UdpLogBox, "TX", $"{UdpHostBox.Text.Trim()}:{port}  {FormatPayload(payload, Encoding.UTF8)}");
+            await senderClient.SendAsync(payload, payload.Length, host, port);
+            AppendLog(UdpLogBox, "TX", $"{host}:{port}  {FormatPayload(payload, Encoding.UTF8)}");
         }
         catch (Exception exception)
         {
@@ -673,10 +684,10 @@ public partial class CommunicationView : UserControl, IDisposable
     private async Task CloseUdpAsync()
     {
         _udpCancellation?.Cancel();
-        _udpCancellation?.Dispose();
-        _udpCancellation = null;
         _udpClient?.Dispose();
         _udpClient = null;
+        _udpCancellation?.Dispose();
+        _udpCancellation = null;
         UdpStartButton.Content = "开始监听";
         await Task.CompletedTask;
     }
@@ -828,6 +839,7 @@ public partial class CommunicationView : UserControl, IDisposable
         _udpCancellation?.Cancel();
         _udpClient?.Dispose();
         _udpCancellation?.Dispose();
+        _udpCancellation = null;
     }
 
     private sealed record ModbusOperation(byte[] Request, ModbusRequestContext Context);
