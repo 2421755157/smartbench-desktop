@@ -28,12 +28,15 @@ public partial class UsbTransferView : UserControl, IDisposable
 
     private readonly DispatcherTimer _driveRefreshTimer;
     private readonly DispatcherTimer _taskTimer;
+    private readonly DispatcherTimer _progressTimer;
     private readonly Stopwatch _taskStopwatch = new();
     private readonly HashSet<string> _uploadedRoots = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _autoFormatAttempts = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _transferFilePaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _transferDirectoryPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<ScannedDirectory> _transferDirectories = [];
+    private readonly Queue<string> _pendingUploadPaths = new();
+    private readonly object _uploadGate = new();
     private CancellationTokenSource? _transferCancellation;
     private readonly AppSettings _settings;
     private long _copiedBytes;
@@ -57,13 +60,14 @@ public partial class UsbTransferView : UserControl, IDisposable
         _driveRefreshTimer.Start();
         _taskTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _taskTimer.Tick += (_, _) => UpdateTaskTimeText();
+        _progressTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
+        _progressTimer.Tick += (_, _) => { if (_isTransferring) RefreshTransferProgress(); };
     }
 
     private void RefreshDrives_Click(object sender, RoutedEventArgs e) => RefreshDrives();
 
     private void RefreshDrives()
     {
-        var selectedRoots = Drives.Where(drive => drive.IsSelected).Select(drive => drive.RootPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var discovered = new List<UsbDriveItem>();
         foreach (var drive in DriveInfo.GetDrives().Where(drive => drive.DriveType == DriveType.Removable).OrderBy(drive => drive.Name).Take(10))
         {
@@ -78,8 +82,7 @@ public partial class UsbTransferView : UserControl, IDisposable
                         Label = "可移动设备",
                         State = "需格式化或不可读取",
                         FreeBytes = 0,
-                        IsReady = false,
-                        IsSelected = selectedRoots.Contains(drive.Name)
+                        IsReady = false
                     });
                     continue;
                 }
@@ -92,8 +95,7 @@ public partial class UsbTransferView : UserControl, IDisposable
                     Label = label,
                     State = "可用",
                     FreeBytes = drive.AvailableFreeSpace,
-                    IsReady = true,
-                    IsSelected = selectedRoots.Contains(drive.Name)
+                    IsReady = true
                 });
             }
             catch (IOException)
@@ -105,8 +107,7 @@ public partial class UsbTransferView : UserControl, IDisposable
                     Label = "可移动设备",
                     State = "需格式化或不可读取",
                     FreeBytes = 0,
-                    IsReady = false,
-                    IsSelected = selectedRoots.Contains(drive.Name)
+                    IsReady = false
                 });
             }
             catch (UnauthorizedAccessException)
@@ -118,14 +119,14 @@ public partial class UsbTransferView : UserControl, IDisposable
                     Label = "可移动设备",
                     State = "访问受限",
                     FreeBytes = 0,
-                    IsReady = false,
-                    IsSelected = selectedRoots.Contains(drive.Name)
+                    IsReady = false
                 });
             }
         }
 
-        Drives.Clear();
-        foreach (var device in discovered) Drives.Add(device);
+        ApplyDriveDiff(discovered);
+        PruneAutoFormatAttempts();
+
         DriveSummary.Text = discovered.Count switch
         {
             0 => "未发现可用的可移动设备",
@@ -149,6 +150,58 @@ public partial class UsbTransferView : UserControl, IDisposable
                 .ToArray();
             if (pending.Length > 0) _ = AutoFormatPendingAsync(pending);
         }
+    }
+
+    /// <summary>
+    /// 增量刷新设备列表：只更新属性与增删条目，不重建集合。
+    /// 之前每 3 秒 Clear + Add 会让 DataGrid 丢失滚动位置与勾选状态，用户点复选框的瞬间行对象被替换，
+    /// 勾选状态随之丢失；增量更新后行对象保持不变，勾选与滚动都能稳定保留。
+    /// </summary>
+    private void ApplyDriveDiff(IReadOnlyList<UsbDriveItem> discovered)
+    {
+        var existingByRoot = new Dictionary<string, UsbDriveItem>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in Drives) existingByRoot[item.RootPath] = item;
+
+        var finalItems = new List<UsbDriveItem>(discovered.Count);
+        foreach (var device in discovered)
+        {
+            if (!existingByRoot.TryGetValue(device.RootPath, out var existing))
+            {
+                finalItems.Add(device);
+                continue;
+            }
+
+            // 盘符被别的设备复用时（例如拔掉 U 盘 A 插上 U 盘 B 占用同一盘符），不能把勾选状态带过去。
+            var identityChanged = !string.Equals(existing.Identity, device.Identity, StringComparison.OrdinalIgnoreCase);
+            var wasSelected = existing.IsSelected;
+            existing.ApplyFrom(device);
+            existing.IsSelected = identityChanged ? false : wasSelected;
+            finalItems.Add(existing);
+        }
+
+        // 用 Move / Insert / Remove 做真正的增量操作，避免 Clear + Add 重建行容器
+        // （重建会丢失滚动位置，并让 DataGrid 重新生成所有行视觉）。
+        for (var index = Drives.Count - 1; index >= 0; index--)
+        {
+            if (!finalItems.Contains(Drives[index])) Drives.RemoveAt(index);
+        }
+
+        for (var index = 0; index < finalItems.Count; index++)
+        {
+            var desired = finalItems[index];
+            var currentIndex = IndexOfItem(Drives, desired);
+            if (currentIndex < 0) Drives.Insert(index, desired);
+            else if (currentIndex != index) Drives.Move(currentIndex, index);
+        }
+    }
+
+    private static int IndexOfItem(ObservableCollection<UsbDriveItem> items, UsbDriveItem target)
+    {
+        for (var index = 0; index < items.Count; index++)
+        {
+            if (ReferenceEquals(items[index], target)) return index;
+        }
+        return -1;
     }
 
     private async void AddFolder_Click(object sender, RoutedEventArgs e)
@@ -351,6 +404,19 @@ public partial class UsbTransferView : UserControl, IDisposable
         }
     }
 
+    /// <summary>
+    /// 清理已拔出设备的自动格式化计数。
+    /// 计数原本按盘符记录，U 盘拔出再插入后计数仍是 3，该盘永远不再被自动格式化；
+    /// 这里在设备消失时清掉计数，重新插入即可重新尝试。
+    /// </summary>
+    private void PruneAutoFormatAttempts()
+    {
+        if (_autoFormatAttempts.Count == 0) return;
+        var present = new HashSet<string>(Drives.Select(drive => drive.RootPath), StringComparer.OrdinalIgnoreCase);
+        foreach (var root in _autoFormatAttempts.Keys.Where(root => !present.Contains(root)).ToArray())
+            _autoFormatAttempts.Remove(root);
+    }
+
     private static async Task FormatRemovableAsync(string rootPath)
     {
         var letter = rootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
@@ -488,51 +554,83 @@ public partial class UsbTransferView : UserControl, IDisposable
 
     private async Task AddUploadPathsAsync(IEnumerable<string> rawPaths)
     {
-        if (_isTransferring || _isLoadingFiles) return;
+        if (_isTransferring) return;
         var paths = rawPaths.Where(path => File.Exists(path) || Directory.Exists(path)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         if (paths.Length == 0) return;
 
-        _isLoadingFiles = true;
+        // 扫描大目录很慢，用户很可能在扫描期间又拖了一批内容进来。
+        // 之前直接 return 会把第二批内容静默丢掉，这里改成排队合并处理。
+        bool shouldDrain;
+        lock (_uploadGate)
+        {
+            foreach (var path in paths) _pendingUploadPaths.Enqueue(path);
+            shouldDrain = !_isLoadingFiles;
+            if (shouldDrain) _isLoadingFiles = true;
+        }
+
+        if (!shouldDrain) return;
+
         try
         {
-            TransferSummary.Text = "正在读取文件与目录结构…";
-            var scan = await Task.Run(() => ScanUploadPaths(paths));
-            var addedFiles = 0;
-            var addedDirectories = 0;
-
-            foreach (var root in scan.Roots)
+            while (true)
             {
-                _uploadedRoots.Add(root);
-            }
-
-            foreach (var directory in scan.Directories)
-            {
-                if (!_transferDirectoryPaths.Add(directory.DestinationRelativePath)) continue;
-                _transferDirectories.Add(directory);
-                addedDirectories++;
-            }
-
-            foreach (var file in scan.Files)
-            {
-                if (!_transferFilePaths.Add(file.FullPath)) continue;
-                TransferFiles.Add(new TransferFileItem
+                string[] batch;
+                lock (_uploadGate)
                 {
-                    FullPath = file.FullPath,
-                    Name = Path.GetFileName(file.FullPath),
-                    DestinationRelativePath = file.DestinationRelativePath,
-                    SizeBytes = file.SizeBytes
-                });
-                addedFiles++;
+                    if (_pendingUploadPaths.Count == 0)
+                    {
+                        // 与入队操作在同一把锁内判定，避免路径在"判空"与"置位"之间被丢弃。
+                        _isLoadingFiles = false;
+                        break;
+                    }
+                    batch = _pendingUploadPaths.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                    _pendingUploadPaths.Clear();
+                }
+                await ProcessUploadPathsAsync(batch);
             }
-
-            UpdateTransferSummary();
-            TransferProgress.Value = 0;
-            TransferTimeText.Text = "";
         }
-        finally
+        catch
         {
-            _isLoadingFiles = false;
+            lock (_uploadGate) _isLoadingFiles = false;
+            throw;
         }
+    }
+
+    private async Task ProcessUploadPathsAsync(string[] paths)
+    {
+        TransferSummary.Text = "正在读取文件与目录结构…";
+        var scan = await Task.Run(() => ScanUploadPaths(paths));
+        var addedFiles = 0;
+        var addedDirectories = 0;
+
+        foreach (var root in scan.Roots)
+        {
+            _uploadedRoots.Add(root);
+        }
+
+        foreach (var directory in scan.Directories)
+        {
+            if (!_transferDirectoryPaths.Add(directory.DestinationRelativePath)) continue;
+            _transferDirectories.Add(directory);
+            addedDirectories++;
+        }
+
+        foreach (var file in scan.Files)
+        {
+            if (!_transferFilePaths.Add(file.FullPath)) continue;
+            TransferFiles.Add(new TransferFileItem
+            {
+                FullPath = file.FullPath,
+                Name = Path.GetFileName(file.FullPath),
+                DestinationRelativePath = file.DestinationRelativePath,
+                SizeBytes = file.SizeBytes
+            });
+            addedFiles++;
+        }
+
+        UpdateTransferSummary();
+        TransferProgress.Value = 0;
+        TransferTimeText.Text = "";
     }
 
     private static ScanResult ScanUploadPaths(IEnumerable<string> paths)
@@ -676,8 +774,12 @@ public partial class UsbTransferView : UserControl, IDisposable
         var cancellationToken = _transferCancellation.Token;
         _copiedBytes = 0;
         _totalBytes = totalBytes;
+        _progressCompleted = 0;
+        _progressTotal = totalBytes;
+        _progressStatus = $"并行下发中 · 已复制 0 / {UsbDriveItem.FormatSize(totalBytes)}";
         _taskStopwatch.Restart();
         _taskTimer.Start();
+        _progressTimer.Start();
         UpdateTaskTimeText();
 
         try
@@ -746,6 +848,7 @@ public partial class UsbTransferView : UserControl, IDisposable
                 return new TransferOutcome(completedDevices, failures, skippedItems);
             });
 
+            RefreshTransferProgress();
             TransferProgress.Value = totalBytes == 0 ? 100 : Math.Min(100, 100d * Interlocked.Read(ref _copiedBytes) / totalBytes);
             TransferStatus.Text = outcome.Failures.Count == 0
                 ? outcome.SkippedItems.Count == 0
@@ -775,6 +878,7 @@ public partial class UsbTransferView : UserControl, IDisposable
             _transferCancellation = null;
             _isTransferring = false;
             _taskTimer.Stop();
+            _progressTimer.Stop();
             _taskStopwatch.Stop();
             TransferProgress.Value = 0;
             TransferTimeText.Text = $"上次任务用时 {_taskStopwatch.Elapsed:hh\\:mm\\:ss}";
@@ -870,11 +974,25 @@ public partial class UsbTransferView : UserControl, IDisposable
 
     private void ReportTransfer(string status, long completed, long total)
     {
-        Dispatcher.InvokeAsync(() =>
-        {
-            TransferStatus.Text = status;
-            TransferProgress.Value = total == 0 ? 0 : Math.Min(100, 100d * completed / total);
-        });
+        // 后台线程只写原子字段，UI 刷新统一交给计时器。
+        // 之前每 128KB 就 Dispatcher.InvokeAsync 一次，10 盘并行时会产生上万次 UI 投递，界面直接卡死。
+        Volatile.Write(ref _progressStatus, status);
+        Interlocked.Exchange(ref _progressCompleted, completed);
+        Interlocked.Exchange(ref _progressTotal, total);
+    }
+
+    private string _progressStatus = string.Empty;
+    private long _progressCompleted;
+    private long _progressTotal;
+
+    private void RefreshTransferProgress()
+    {
+        var completed = Interlocked.Read(ref _progressCompleted);
+        var total = Interlocked.Read(ref _progressTotal);
+        if (total <= 0) return;
+        var status = Volatile.Read(ref _progressStatus);
+        if (!string.IsNullOrEmpty(status)) TransferStatus.Text = status;
+        TransferProgress.Value = Math.Min(100, 100d * completed / total);
     }
 
     public void Dispose()
@@ -883,6 +1001,7 @@ public partial class UsbTransferView : UserControl, IDisposable
         _disposed = true;
         _driveRefreshTimer.Stop();
         _taskTimer.Stop();
+        _progressTimer.Stop();
         _transferCancellation?.Cancel();
         _transferCancellation?.Dispose();
     }

@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -7,6 +8,12 @@ namespace SmartBench;
 
 public partial class MainWindow : Window
 {
+    // 画刷缓存：原先每次导航都用 BrushConverter 转换 4 次字符串，白白产生垃圾。
+    private static readonly Brush ActiveBackground = CreateBrush("#18345A");
+    private static readonly Brush ActiveForeground = Brushes.White;
+    private static readonly Brush IdleBackground = Brushes.Transparent;
+    private static readonly Brush IdleForeground = CreateBrush("#C9D5E9");
+
     private readonly TtsView _ttsView = new();
     private readonly CommunicationView _communicationView = new();
     private readonly UsbTransferView _usbTransferView = new();
@@ -15,7 +22,11 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         PageHost.Content = _ttsView;
+        VersionText.Text = "v" + (Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.7.0");
     }
+
+    private static Brush CreateBrush(string hex) =>
+        new SolidColorBrush((Color)ColorConverter.ConvertFromString(hex)) { Opacity = 1 };
 
     private void Navigate_Click(object sender, RoutedEventArgs e)
     {
@@ -23,13 +34,13 @@ public partial class MainWindow : Window
 
         foreach (var candidate in new[] { TtsNavigation, CommunicationNavigation, UsbNavigation })
         {
-            candidate.Background = Brushes.Transparent;
-            candidate.BorderBrush = Brushes.Transparent;
-            candidate.Foreground = (Brush)new BrushConverter().ConvertFrom("#C9D5E9")!;
+            candidate.Background = IdleBackground;
+            candidate.BorderBrush = IdleBackground;
+            candidate.Foreground = IdleForeground;
         }
-        button.Background = (Brush)new BrushConverter().ConvertFrom("#18345A")!;
-        button.BorderBrush = button.Background;
-        button.Foreground = Brushes.White;
+        button.Background = ActiveBackground;
+        button.BorderBrush = ActiveBackground;
+        button.Foreground = ActiveForeground;
 
         switch (destination)
         {

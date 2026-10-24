@@ -11,8 +11,11 @@ namespace SmartBench.Views;
 public partial class TtsView : UserControl, IDisposable
 {
     private readonly SpeechSynthesizer _synthesizer = new();
+    private readonly object _playbackGate = new();
+    private readonly Queue<int> _pendingPlaybackTokens = new();
     private bool _disposed;
     private bool _exporting;
+    private int _playbackToken;
 
     public TtsView()
     {
@@ -48,6 +51,12 @@ public partial class TtsView : UserControl, IDisposable
         if (!EnsureText()) return;
         try
         {
+            // 每次播放发放一个令牌并入队。SpeakCompleted 不携带是哪次播放触发的，
+            // 但完成事件按播放顺序到达，因此可以出队比对：只有最新令牌才允许更新状态。
+            // 否则取消旧播放产生的"已停止"回调会晚到，把新播放的"正在播放…"覆盖掉。
+            var token = Interlocked.Increment(ref _playbackToken);
+            lock (_playbackGate) _pendingPlaybackTokens.Enqueue(token);
+
             _synthesizer.SpeakAsyncCancelAll();
             _synthesizer.Rate = (int)RateSlider.Value;
             _synthesizer.Volume = (int)VolumeSlider.Value;
@@ -78,6 +87,8 @@ public partial class TtsView : UserControl, IDisposable
 
     private void StopButton_Click(object sender, RoutedEventArgs e)
     {
+        Interlocked.Increment(ref _playbackToken);
+        lock (_playbackGate) _pendingPlaybackTokens.Clear();
         _synthesizer.SpeakAsyncCancelAll();
         PlaybackStatus.Text = "已停止";
     }
@@ -166,7 +177,18 @@ public partial class TtsView : UserControl, IDisposable
         PlaybackStatus.Text = status;
     }
 
-    private void Synthesizer_SpeakCompleted(object? sender, SpeakCompletedEventArgs e) => Dispatcher.InvokeAsync(() => PlaybackStatus.Text = e.Cancelled ? "已停止" : "播放完成");
+    private void Synthesizer_SpeakCompleted(object? sender, SpeakCompletedEventArgs e)
+    {
+        int token;
+        lock (_playbackGate)
+        {
+            if (_pendingPlaybackTokens.Count == 0) return;
+            token = _pendingPlaybackTokens.Dequeue();
+        }
+        if (token != Volatile.Read(ref _playbackToken)) return;
+
+        Dispatcher.InvokeAsync(() => PlaybackStatus.Text = e.Cancelled ? "已停止" : "播放完成");
+    }
 
     private void VoiceSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {

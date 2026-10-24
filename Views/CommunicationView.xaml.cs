@@ -17,6 +17,8 @@ public partial class CommunicationView : UserControl, IDisposable
 {
     private const int MinimumModbusIntervalMilliseconds = 100;
     private const int MaximumIntervalMilliseconds = 3_600_000;
+    private const int MaximumConsecutivePollFailures = 10;
+    private const int MaximumLogLength = 48_000;
 
     private SerialPort? _serialPort;
     private SerialPort? _modbusPort;
@@ -25,6 +27,12 @@ public partial class CommunicationView : UserControl, IDisposable
     private Encoding _serialEncoding = Encoding.UTF8;
     private Decoder _serialDecoder = Encoding.UTF8.GetDecoder();
     private readonly DispatcherTimer _serialAutoSendTimer = new();
+    private readonly DispatcherTimer _logFlushTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
+
+    private readonly LogBuffer _serialLogBuffer = new();
+    private readonly LogBuffer _modbusLogBuffer = new();
+    private readonly LogBuffer _udpLogBuffer = new();
+    private readonly AppSettings _settings = AppSettings.Load();
 
     private readonly SemaphoreSlim _modbusTransactionLock = new(1, 1);
     private readonly object _modbusResponseGate = new();
@@ -35,6 +43,7 @@ public partial class CommunicationView : UserControl, IDisposable
     private CancellationTokenSource? _modbusPollingCancellation;
     private byte? _displayedModbusFunction;
     private bool _disposed;
+    private bool _restoringSettings;
 
     public ObservableCollection<ModbusRegisterItem> ModbusRegisters { get; } = [];
 
@@ -44,11 +53,37 @@ public partial class CommunicationView : UserControl, IDisposable
         InitializeComponent();
         DataContext = this;
         _serialAutoSendTimer.Tick += (_, _) => SendSerialPayload(showErrors: false);
+        _logFlushTimer.Tick += (_, _) => FlushLogs();
+        _logFlushTimer.Start();
         RefreshPorts();
+        RestoreSettings();
         RefreshModbusAddressHint();
         AppendLog(SerialLogBox, "系统", "请选择端口并打开串口。");
         AppendLog(ModbusLogBox, "系统", "支持 FC03、FC04 读取与 FC06、FC16 写入。读取会校验站号、功能码、帧长和 CRC16。");
         AppendLog(UdpLogBox, "系统", "监听默认绑定本机接口。请勿将调试端口直接暴露在公网。");
+    }
+
+    private void FlushLogs()
+    {
+        FlushLog(SerialLogBox, _serialLogBuffer);
+        FlushLog(ModbusLogBox, _modbusLogBuffer);
+        FlushLog(UdpLogBox, _udpLogBuffer);
+    }
+
+    private static void FlushLog(TextBox target, LogBuffer buffer)
+    {
+        var pending = buffer.Take();
+        if (pending.Length == 0) return;
+        target.AppendText(pending);
+        if (target.Text.Length > MaximumLogLength)
+        {
+            // 按整行截断，避免切在代理对中间产生乱码。
+            var overflow = target.Text.Length - MaximumLogLength;
+            var newlineIndex = target.Text.IndexOf('\n', overflow);
+            var cutIndex = newlineIndex >= 0 ? newlineIndex + 1 : overflow;
+            if (cutIndex > 0 && cutIndex < target.Text.Length) target.Text = target.Text[cutIndex..];
+        }
+        target.ScrollToEnd();
     }
 
     private void RefreshPorts_Click(object sender, RoutedEventArgs e) => RefreshPorts();
@@ -63,6 +98,94 @@ public partial class CommunicationView : UserControl, IDisposable
         SerialPortSelector.SelectedItem = ports.Contains(selectedSerial) ? selectedSerial : ports.FirstOrDefault();
         ModbusPortSelector.SelectedItem = ports.Contains(selectedModbus) ? selectedModbus : ports.FirstOrDefault();
     }
+
+    private void RestoreSettings()
+    {
+        _restoringSettings = true;
+        try
+        {
+            SelectComboContent(SerialBaudSelector, _settings.SerialBaud);
+            SelectComboContent(SerialDataBits, _settings.SerialDataBits);
+            SelectComboContent(SerialParity, _settings.SerialParity);
+            SelectComboContent(SerialStopBits, _settings.SerialStopBits);
+            SelectComboContent(SerialEncodingSelector, _settings.SerialEncoding);
+            SelectComboContent(SerialLineEndingSelector, _settings.SerialLineEnding);
+            SerialAutoIntervalBox.Text = _settings.SerialAutoInterval;
+            if (!string.IsNullOrWhiteSpace(_settings.SerialPort) && SerialPortSelector.Items.Contains(_settings.SerialPort))
+                SerialPortSelector.SelectedItem = _settings.SerialPort;
+
+            SelectComboContent(ModbusBaudSelector, _settings.ModbusBaud);
+            SelectComboContent(ModbusDataBits, _settings.ModbusDataBits);
+            SelectComboContent(ModbusParity, _settings.ModbusParity);
+            SelectComboContent(ModbusStopBits, _settings.ModbusStopBits);
+            if (!string.IsNullOrWhiteSpace(_settings.ModbusPort) && ModbusPortSelector.Items.Contains(_settings.ModbusPort))
+                ModbusPortSelector.SelectedItem = _settings.ModbusPort;
+            ModbusStationBox.Text = _settings.ModbusStation;
+            ModbusAddressBox.Text = _settings.ModbusAddress;
+            ModbusPollIntervalBox.Text = _settings.ModbusPollInterval;
+            ModbusTimeoutBox.Text = _settings.ModbusTimeout;
+
+            ModbusFunctionSelector.SelectedIndex = Math.Clamp(_settings.ModbusFunctionIndex, 0, 3);
+            ModbusValueBox.Text = _settings.ModbusValue;
+
+            UdpLocalPortBox.Text = _settings.UdpLocalPort;
+            SelectComboContent(UdpBindSelector, _settings.UdpBindAddress);
+            UdpHostBox.Text = _settings.UdpRemoteHost;
+            UdpRemotePortBox.Text = _settings.UdpRemotePort;
+            UdpBroadcast.IsChecked = _settings.UdpBroadcast;
+        }
+        finally
+        {
+            _restoringSettings = false;
+        }
+    }
+
+    private void SaveSettings()
+    {
+        _settings.SerialPort = SerialPortSelector.SelectedItem as string ?? string.Empty;
+        _settings.SerialBaud = ComboContent(SerialBaudSelector);
+        _settings.SerialDataBits = ComboContent(SerialDataBits);
+        _settings.SerialParity = ComboContent(SerialParity);
+        _settings.SerialStopBits = ComboContent(SerialStopBits);
+        _settings.SerialEncoding = ComboContent(SerialEncodingSelector);
+        _settings.SerialLineEnding = ComboContent(SerialLineEndingSelector);
+        _settings.SerialAutoInterval = SerialAutoIntervalBox.Text;
+
+        _settings.ModbusPort = ModbusPortSelector.SelectedItem as string ?? string.Empty;
+        _settings.ModbusBaud = ComboContent(ModbusBaudSelector);
+        _settings.ModbusDataBits = ComboContent(ModbusDataBits);
+        _settings.ModbusParity = ComboContent(ModbusParity);
+        _settings.ModbusStopBits = ComboContent(ModbusStopBits);
+        _settings.ModbusStation = ModbusStationBox.Text;
+        _settings.ModbusFunctionIndex = ModbusFunctionSelector.SelectedIndex;
+        _settings.ModbusAddress = ModbusAddressBox.Text;
+        _settings.ModbusValue = ModbusValueBox.Text;
+        _settings.ModbusPollInterval = ModbusPollIntervalBox.Text;
+        _settings.ModbusTimeout = ModbusTimeoutBox.Text;
+
+        _settings.UdpLocalPort = UdpLocalPortBox.Text;
+        _settings.UdpBindAddress = ComboContent(UdpBindSelector);
+        _settings.UdpRemoteHost = UdpHostBox.Text;
+        _settings.UdpRemotePort = UdpRemotePortBox.Text;
+        _settings.UdpBroadcast = UdpBroadcast.IsChecked == true;
+        _settings.Save();
+    }
+
+    private static void SelectComboContent(ComboBox selector, string? content)
+    {
+        if (string.IsNullOrWhiteSpace(content)) return;
+        foreach (var item in selector.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(item.Content?.ToString(), content, StringComparison.OrdinalIgnoreCase))
+            {
+                selector.SelectedItem = item;
+                return;
+            }
+        }
+    }
+
+    private static string ComboContent(ComboBox selector) =>
+        (selector.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? string.Empty;
 
     private void SerialConnectButton_Click(object sender, RoutedEventArgs e)
     {
@@ -90,6 +213,7 @@ public partial class CommunicationView : UserControl, IDisposable
             _serialPort.Open();
             SerialConnectButton.Content = "关闭串口";
             AppendLog(SerialLogBox, "系统", $"已打开 {portName}。");
+            SaveSettings();
         }
         catch (Exception exception)
         {
@@ -168,8 +292,8 @@ public partial class CommunicationView : UserControl, IDisposable
         }
     }
 
-    private void ClearSerialLog_Click(object sender, RoutedEventArgs e) => SerialLogBox.Clear();
-    private void SaveSerialLog_Click(object sender, RoutedEventArgs e) => SaveLog(SerialLogBox.Text, "串口日志");
+    private void ClearSerialLog_Click(object sender, RoutedEventArgs e) => ClearLog(SerialLogBox, _serialLogBuffer);
+    private void SaveSerialLog_Click(object sender, RoutedEventArgs e) => SaveLog(SerialLogBox, _serialLogBuffer, "串口日志");
 
     private void ModbusConnectButton_Click(object sender, RoutedEventArgs e)
     {
@@ -195,6 +319,7 @@ public partial class CommunicationView : UserControl, IDisposable
             ModbusConnectButton.Content = "关闭串口";
             ModbusStatusText.Text = $"已连接 {portName} · {_modbusPort.BaudRate} bps";
             AppendLog(ModbusLogBox, "系统", $"已打开 {portName}：{_modbusPort.DataBits}{_modbusPort.Parity.ToString()[0]}{(int)_modbusPort.StopBits}，{_modbusPort.BaudRate} bps。");
+            SaveSettings();
         }
         catch (Exception exception)
         {
@@ -302,6 +427,7 @@ public partial class CommunicationView : UserControl, IDisposable
     private async Task PollModbusAsync(CancellationToken cancellationToken)
     {
         AppendLog(ModbusLogBox, "系统", "循环读取已启动。同一时间只会有一个 Modbus 请求在途。");
+        var consecutiveFailures = 0;
         while (!cancellationToken.IsCancellationRequested)
         {
             var startedAt = DateTime.UtcNow;
@@ -310,6 +436,7 @@ public partial class CommunicationView : UserControl, IDisposable
                 var operation = BuildModbusOperation(requireReadFunction: true);
                 var response = await ExecuteModbusRequestAsync(operation.Request, operation.Context, ReadTimeout(), cancellationToken);
                 ApplyModbusResponse(operation, response);
+                consecutiveFailures = 0;
                 SetModbusStatus($"循环读取正常 · {DateTime.Now:HH:mm:ss}");
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -318,9 +445,18 @@ public partial class CommunicationView : UserControl, IDisposable
             }
             catch (Exception exception)
             {
+                consecutiveFailures++;
                 MarkModbusRows(exception is TimeoutException ? "超时" : "读取错误");
-                AppendLog(ModbusLogBox, "警告", $"循环读取失败：{exception.Message}");
+                AppendLog(ModbusLogBox, "警告", $"循环读取失败（连续 {consecutiveFailures} 次）：{exception.Message}");
                 SetModbusStatus(exception is TimeoutException ? "等待响应超时" : "循环读取错误");
+
+                if (consecutiveFailures >= MaximumConsecutivePollFailures)
+                {
+                    AppendLog(ModbusLogBox, "警告", $"连续 {consecutiveFailures} 次失败，已自动停止循环读取。请检查设备连接与从站地址后再手动重启。");
+                    SetModbusStatus("连续失败过多，已停止循环读取");
+                    if (ModbusAutoPoll is not null) ModbusAutoPoll.IsChecked = false;
+                    break;
+                }
             }
 
             var elapsed = DateTime.UtcNow - startedAt;
@@ -593,8 +729,8 @@ public partial class CommunicationView : UserControl, IDisposable
         _displayedModbusFunction = null;
     }
 
-    private void ClearModbusLog_Click(object sender, RoutedEventArgs e) => ModbusLogBox.Clear();
-    private void SaveModbusLog_Click(object sender, RoutedEventArgs e) => SaveLog(ModbusLogBox.Text, "Modbus日志");
+    private void ClearModbusLog_Click(object sender, RoutedEventArgs e) => ClearLog(ModbusLogBox, _modbusLogBuffer);
+    private void SaveModbusLog_Click(object sender, RoutedEventArgs e) => SaveLog(ModbusLogBox, _modbusLogBuffer, "Modbus日志");
 
     private void ModbusFunctionSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -609,6 +745,8 @@ public partial class CommunicationView : UserControl, IDisposable
         if (ModbusAutoPoll is not null && ModbusFunctionSelector.SelectedIndex is not (0 or 1))
             ModbusAutoPoll.IsChecked = false;
         RefreshModbusAddressHint();
+        // 恢复配置期间不能回写，否则会把刚恢复的参数覆盖成默认值。
+        if (!_restoringSettings) SaveSettings();
     }
 
     private async void UdpStartButton_Click(object sender, RoutedEventArgs e)
@@ -628,6 +766,7 @@ public partial class CommunicationView : UserControl, IDisposable
             _udpCancellation = new CancellationTokenSource();
             UdpStartButton.Content = "停止监听";
             AppendLog(UdpLogBox, "系统", $"开始在 {bindAddress}:{localPort} 监听。");
+            SaveSettings();
             _ = ReceiveUdpAsync(_udpClient, _udpCancellation.Token);
         }
         catch (Exception exception)
@@ -678,8 +817,8 @@ public partial class CommunicationView : UserControl, IDisposable
         }
     }
 
-    private void ClearUdpLog_Click(object sender, RoutedEventArgs e) => UdpLogBox.Clear();
-    private void SaveUdpLog_Click(object sender, RoutedEventArgs e) => SaveLog(UdpLogBox.Text, "UDP日志");
+    private void ClearUdpLog_Click(object sender, RoutedEventArgs e) => ClearLog(UdpLogBox, _udpLogBuffer);
+    private void SaveUdpLog_Click(object sender, RoutedEventArgs e) => SaveLog(UdpLogBox, _udpLogBuffer, "UDP日志");
 
     private async Task CloseUdpAsync()
     {
@@ -689,6 +828,7 @@ public partial class CommunicationView : UserControl, IDisposable
         _udpCancellation?.Dispose();
         _udpCancellation = null;
         UdpStartButton.Content = "开始监听";
+        if (!_disposed) SaveSettings();
         await Task.CompletedTask;
     }
 
@@ -704,6 +844,7 @@ public partial class CommunicationView : UserControl, IDisposable
             _serialPort = null;
         }
         SerialConnectButton.Content = "打开串口";
+        if (!_disposed) SaveSettings();
     }
 
     private void CloseModbus()
@@ -799,25 +940,39 @@ public partial class CommunicationView : UserControl, IDisposable
     {
         var tokens = input.Split([',', ';', ' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
         if (tokens.Length == 0) throw new FormatException("请输入至少一个寄存器数值。");
-        return tokens.Select(token => ushort.Parse(token)).ToArray();
+        if (tokens.Length > 123) throw new FormatException("单次写入不能超过 123 个寄存器。");
+        var values = new ushort[tokens.Length];
+        for (var index = 0; index < tokens.Length; index++)
+        {
+            if (!ushort.TryParse(tokens[index], out values[index]))
+                throw new FormatException($"“{tokens[index]}”不是有效的寄存器数值，需为 0 到 65535 的数字。");
+        }
+        return values;
     }
 
     private void AppendLog(TextBox target, string direction, string message)
     {
-        Dispatcher.InvokeAsync(() =>
-        {
-            const int maximumLogLength = 48_000;
-            target.AppendText($"[{DateTime.Now:HH:mm:ss.fff}] {direction,-10} {message}\n");
-            if (target.Text.Length > maximumLogLength) target.Text = target.Text[^maximumLogLength..];
-            target.ScrollToEnd();
-        });
+        var buffer = BufferFor(target);
+        buffer?.Append($"[{DateTime.Now:HH:mm:ss.fff}] {direction,-10} {message}\n");
     }
 
-    private static void ShowCommunicationError(string title, Exception exception) =>
-        MessageBox.Show(exception.Message, title, MessageBoxButton.OK, MessageBoxImage.Warning);
-
-    private static void SaveLog(string content, string prefix)
+    private LogBuffer? BufferFor(TextBox target)
     {
+        if (ReferenceEquals(target, SerialLogBox)) return _serialLogBuffer;
+        if (ReferenceEquals(target, ModbusLogBox)) return _modbusLogBuffer;
+        if (ReferenceEquals(target, UdpLogBox)) return _udpLogBuffer;
+        return null;
+    }
+
+    private void ClearLog(TextBox target, LogBuffer buffer)
+    {
+        buffer.Clear();
+        target.Clear();
+    }
+
+    private void SaveLog(TextBox target, LogBuffer buffer, string prefix)
+    {
+        FlushLog(target, buffer);
         var dialog = new SaveFileDialog
         {
             Title = "保存通讯日志",
@@ -825,15 +980,21 @@ public partial class CommunicationView : UserControl, IDisposable
             FileName = $"{prefix}_{DateTime.Now:yyyyMMdd_HHmmss}.txt"
         };
         if (dialog.ShowDialog() != true) return;
-        try { File.WriteAllText(dialog.FileName, content, Encoding.UTF8); }
+        try { File.WriteAllText(dialog.FileName, target.Text, Encoding.UTF8); }
         catch (Exception exception) { MessageBox.Show(exception.Message, "无法保存日志", MessageBoxButton.OK, MessageBoxImage.Warning); }
     }
+
+    private static void ShowCommunicationError(string title, Exception exception) =>
+        MessageBox.Show(exception.Message, title, MessageBoxButton.OK, MessageBoxImage.Warning);
 
     public void Dispose()
     {
         if (_disposed) return;
+        // 关闭程序时先落盘一次参数，否则用户改完波特率直接退出，配置就丢了。
+        SaveSettings();
         _disposed = true;
         _serialAutoSendTimer.Stop();
+        _logFlushTimer.Stop();
         CloseSerial();
         CloseModbus();
         _udpCancellation?.Cancel();

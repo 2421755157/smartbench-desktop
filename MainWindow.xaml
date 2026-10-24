@@ -22,7 +22,7 @@
           <Button x:Name="UsbNavigation" Tag="usb" Click="Navigate_Click" HorizontalContentAlignment="Left" Padding="15,13" Foreground="#C9D5E9" Background="Transparent" BorderThickness="0"><StackPanel Orientation="Horizontal"><TextBlock Text="▣" FontSize="17" Margin="1,-2,12,0" /><StackPanel><TextBlock Text="U 盘批量下发" FontSize="14" /><TextBlock Text="识别、选择与完整文件复制" Foreground="#7F94B3" FontSize="10" FontWeight="Normal" /></StackPanel></StackPanel></Button>
         </StackPanel>
 
-        <Border DockPanel.Dock="Bottom" Margin="20" Padding="13" Background="#112846" CornerRadius="10"><StackPanel><TextBlock Text="安全运行模式" Foreground="#DDE8F9" FontWeight="SemiBold" FontSize="12" /><TextBlock Text="普通用户权限 · 本机离线运行 · v0.6" Foreground="#8EA2C0" FontSize="10" Margin="0,4,0,0" TextWrapping="Wrap" /></StackPanel></Border>
+        <Border DockPanel.Dock="Bottom" Margin="20" Padding="13" Background="#112846" CornerRadius="10"><StackPanel><TextBlock Text="安全运行模式" Foreground="#DDE8F9" FontWeight="SemiBold" FontSize="12" /><StackPanel Orientation="Horizontal" Margin="0,4,0,0"><TextBlock Text="普通用户权限 · 本机离线运行 ·" Foreground="#8EA2C0" FontSize="10" /><TextBlock x:Name="VersionText" Text="v0.7.0" Foreground="#8EA2C0" FontSize="10" Margin="4,0,0,0" /></StackPanel></StackPanel></Border>
       </DockPanel>
     </Border>
 
