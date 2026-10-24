@@ -71,9 +71,8 @@ public partial class UsbTransferView : UserControl, IDisposable
             if (TaskLogList is not null && TaskLogList.Items.Count > 0)
                 TaskLogList.ScrollIntoView(TaskLogList.Items[^1]);
         };
-        // 任务日志默认收起，只占标题栏高度，把空间留给设备与文件列表。
-        TaskLogList.Visibility = Visibility.Collapsed;
-        ToggleTaskLogButton.Content = "展开";
+        TaskLogList.Visibility = Visibility.Visible;
+        ToggleTaskLogButton.Content = "收起";
     }
 
     private void RefreshDrives_Click(object sender, RoutedEventArgs e) => RefreshDrives();
@@ -555,17 +554,13 @@ public partial class UsbTransferView : UserControl, IDisposable
         }
     }
 
-    private const double TaskLogCollapsedHeight = 34;
-    private const double TaskLogExpandedHeight = 168;
-
-    private bool _taskLogExpanded;
+    // 日志面板高度由布局自动分配（任务区吃掉剩余空间）；折叠时只隐藏列表，保留标题栏。
+    private bool _taskLogExpanded = true;
 
     private void EnsureTaskLogExpanded()
     {
         if (_taskLogExpanded) return;
         _taskLogExpanded = true;
-        TaskLogPanel.Height = TaskLogExpandedHeight;
-        TaskLogPanel.MinHeight = TaskLogExpandedHeight;
         TaskLogList.Visibility = Visibility.Visible;
         ToggleTaskLogButton.Content = "收起";
     }
@@ -573,20 +568,8 @@ public partial class UsbTransferView : UserControl, IDisposable
     private void ToggleTaskLog_Click(object sender, RoutedEventArgs e)
     {
         _taskLogExpanded = !_taskLogExpanded;
-        if (_taskLogExpanded)
-        {
-            TaskLogPanel.Height = TaskLogExpandedHeight;
-            TaskLogPanel.MinHeight = TaskLogExpandedHeight;
-            TaskLogList.Visibility = Visibility.Visible;
-            ToggleTaskLogButton.Content = "收起";
-        }
-        else
-        {
-            TaskLogPanel.Height = TaskLogCollapsedHeight;
-            TaskLogPanel.MinHeight = TaskLogCollapsedHeight;
-            TaskLogList.Visibility = Visibility.Collapsed;
-            ToggleTaskLogButton.Content = "展开";
-        }
+        TaskLogList.Visibility = _taskLogExpanded ? Visibility.Visible : Visibility.Collapsed;
+        ToggleTaskLogButton.Content = _taskLogExpanded ? "收起" : "展开";
     }
 
     private void UpdateTaskLogSummary()
@@ -852,6 +835,9 @@ public partial class UsbTransferView : UserControl, IDisposable
         TransferSummary.Text = TransferFiles.Count == 0 && _transferDirectories.Count == 0
             ? "拖入文件或文件夹，支持任意格式并保留目录层级"
             : $"已载入 {TransferFiles.Count} 个文件、{_transferDirectories.Count} 个文件夹 · 合计 {UsbDriveItem.FormatSize(totalBytes)}";
+        // 没有文件时显示空状态提示，避免空表格看起来像"表格不见了"。
+        if (TransferEmptyHint is not null)
+            TransferEmptyHint.Visibility = TransferFiles.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private async void StartTransferButton_Click(object sender, RoutedEventArgs e)
