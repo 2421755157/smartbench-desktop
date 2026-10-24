@@ -33,6 +33,10 @@ public partial class CommunicationView : UserControl, IDisposable
     private readonly LogBuffer _modbusLogBuffer = new();
     private readonly LogBuffer _udpLogBuffer = new();
     private readonly AppSettings _settings = AppSettings.Load();
+    private long _serialTxBytes;
+    private long _serialRxBytes;
+    private long _udpTxBytes;
+    private long _udpRxBytes;
 
     private readonly SemaphoreSlim _modbusTransactionLock = new(1, 1);
     private readonly object _modbusResponseGate = new();
@@ -61,6 +65,24 @@ public partial class CommunicationView : UserControl, IDisposable
         AppendLog(SerialLogBox, "系统", "请选择端口并打开串口。");
         AppendLog(ModbusLogBox, "系统", "支持 FC03、FC04 读取与 FC06、FC16 写入。读取会校验站号、功能码、帧长和 CRC16。");
         AppendLog(UdpLogBox, "系统", "监听默认绑定本机接口。请勿将调试端口直接暴露在公网。");
+    }
+
+    private void UpdateSerialStats()
+    {
+        if (SerialStatsText is null) return;
+        var sent = Interlocked.Read(ref _serialTxBytes);
+        var received = Interlocked.Read(ref _serialRxBytes);
+        Dispatcher.InvokeAsync(() => SerialStatsText.Text =
+            $"已发送 {sent:N0} 字节 · 已接收 {received:N0} 字节");
+    }
+
+    private void UpdateUdpStats()
+    {
+        if (UdpStatsText is null) return;
+        var sent = Interlocked.Read(ref _udpTxBytes);
+        var received = Interlocked.Read(ref _udpRxBytes);
+        Dispatcher.InvokeAsync(() => UdpStatsText.Text =
+            $"已发送 {sent:N0} 字节 · 已接收 {received:N0} 字节");
     }
 
     private void FlushLogs()
@@ -242,6 +264,8 @@ public partial class CommunicationView : UserControl, IDisposable
                 ? HexCodec.Parse(SerialSendBox.Text)
                 : _serialEncoding.GetBytes(SerialSendBox.Text + SelectedLineEnding());
             _serialPort.Write(payload, 0, payload.Length);
+            Interlocked.Add(ref _serialTxBytes, payload.Length);
+            UpdateSerialStats();
             AppendLog(SerialLogBox, "TX", FormatPayload(payload, _serialEncoding));
             return true;
         }
@@ -284,6 +308,8 @@ public partial class CommunicationView : UserControl, IDisposable
             if (length == 0) return;
             var buffer = new byte[length];
             port.Read(buffer, 0, length);
+            Interlocked.Add(ref _serialRxBytes, length);
+            UpdateSerialStats();
             AppendLog(SerialLogBox, "RX", $"HEX  {HexCodec.Format(buffer)}\nTXT  {DecodeSerialChunk(buffer)}");
         }
         catch (Exception exception)
@@ -788,6 +814,8 @@ public partial class CommunicationView : UserControl, IDisposable
                     AppendLog(UdpLogBox, "警告", "收到超出允许范围的 UDP 报文，已忽略。");
                     continue;
                 }
+                Interlocked.Add(ref _udpRxBytes, result.Buffer.Length);
+                UpdateUdpStats();
                 AppendLog(UdpLogBox, $"RX {result.RemoteEndPoint}", FormatPayload(result.Buffer, Encoding.UTF8));
             }
         }
@@ -809,6 +837,8 @@ public partial class CommunicationView : UserControl, IDisposable
             if (payload.Length > 65_507) throw new InvalidOperationException("UDP 单个数据报不能超过 65,507 字节。");
             using var senderClient = new UdpClient { EnableBroadcast = UdpBroadcast.IsChecked == true };
             await senderClient.SendAsync(payload, payload.Length, host, port);
+            Interlocked.Add(ref _udpTxBytes, payload.Length);
+            UpdateUdpStats();
             AppendLog(UdpLogBox, "TX", $"{host}:{port}  {FormatPayload(payload, Encoding.UTF8)}");
         }
         catch (Exception exception)

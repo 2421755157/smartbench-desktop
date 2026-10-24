@@ -25,6 +25,7 @@ public partial class UsbTransferView : UserControl, IDisposable
 
     public ObservableCollection<UsbDriveItem> Drives { get; } = [];
     public ObservableCollection<TransferFileItem> TransferFiles { get; } = [];
+    public IReadOnlyList<TaskLogEntry> TaskLogEntries => _taskLog.Entries;
 
     private readonly DispatcherTimer _driveRefreshTimer;
     private readonly DispatcherTimer _taskTimer;
@@ -37,6 +38,7 @@ public partial class UsbTransferView : UserControl, IDisposable
     private readonly List<ScannedDirectory> _transferDirectories = [];
     private readonly Queue<string> _pendingUploadPaths = new();
     private readonly object _uploadGate = new();
+    private readonly TaskLog _taskLog = new();
     private CancellationTokenSource? _transferCancellation;
     private readonly AppSettings _settings;
     private long _copiedBytes;
@@ -62,6 +64,16 @@ public partial class UsbTransferView : UserControl, IDisposable
         _taskTimer.Tick += (_, _) => UpdateTaskTimeText();
         _progressTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
         _progressTimer.Tick += (_, _) => { if (_isTransferring) RefreshTransferProgress(); };
+        _taskLog.EntriesChanged += () =>
+        {
+            UpdateTaskLogSummary();
+            // 新条目到达时自动滚到底部，保证最新的进度可见。
+            if (TaskLogList is not null && TaskLogList.Items.Count > 0)
+                TaskLogList.ScrollIntoView(TaskLogList.Items[^1]);
+        };
+        // 任务日志默认收起，只占标题栏高度，把空间留给设备与文件列表。
+        TaskLogList.Visibility = Visibility.Collapsed;
+        ToggleTaskLogButton.Content = "展开";
     }
 
     private void RefreshDrives_Click(object sender, RoutedEventArgs e) => RefreshDrives();
@@ -326,7 +338,8 @@ public partial class UsbTransferView : UserControl, IDisposable
         _taskStopwatch.Restart();
         _taskTimer.Start();
         UpdateTaskTimeText();
-        List<string> failures;
+        EnsureTaskLogExpanded();
+        _taskLog.Info($"开始{label}", $"{targets.Count} 个设备并行快速格式化，各设备错峰 400 毫秒启动");        List<string> failures;
 
         try
         {
@@ -336,14 +349,18 @@ public partial class UsbTransferView : UserControl, IDisposable
                 var syncLock = new object();
                 var tasks = targets.Select(async (target, index) =>
                 {
+                    var deviceStart = Stopwatch.StartNew();
                     try
                     {
                         if (index > 0) await Task.Delay(index * 400);
                         await FormatRemovableAsync(target.RootPath);
+                        deviceStart.Stop();
+                        _taskLog.Success($"{target.RootPath} 格式化完成", $"用时 {deviceStart.Elapsed.TotalSeconds:0.0} 秒");
                     }
                     catch (Exception exception)
                     {
                         lock (syncLock) failureList.Add($"{target.RootPath}：{exception.Message}");
+                        _taskLog.Error($"{target.RootPath} 格式化失败", exception.Message);
                     }
                     finally
                     {
@@ -495,6 +512,99 @@ public partial class UsbTransferView : UserControl, IDisposable
         return null;
     }
 
+    private void ClearTaskLog_Click(object sender, RoutedEventArgs e)
+    {
+        _taskLog.Clear();
+        UpdateTaskLogSummary();
+    }
+
+    private void SaveTaskLog_Click(object sender, RoutedEventArgs e)
+    {
+        _taskLog.Flush();
+        var entries = _taskLog.Entries;
+        if (entries.Count == 0)
+        {
+            MessageBox.Show("任务日志为空，暂无可导出的内容。", "导出任务日志", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var dialog = new SaveFileDialog
+        {
+            Title = "导出任务日志",
+            Filter = "文本文件 (*.txt)|*.txt",
+            FileName = $"智控工作台_任务日志_{DateTime.Now:yyyyMMdd_HHmmss}.txt"
+        };
+        if (dialog.ShowDialog() != true) return;
+        try
+        {
+            var builder = new System.Text.StringBuilder();
+            builder.AppendLine($"智控工作台 · 任务日志    导出时间：{DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            builder.AppendLine(new string('-', 72));
+            foreach (var entry in entries)
+            {
+                builder.Append($"[{entry.TimeText}] [{entry.LevelText}] {entry.Message}");
+                if (!string.IsNullOrWhiteSpace(entry.Detail)) builder.Append($"  —— {entry.Detail}");
+                builder.AppendLine();
+            }
+            File.WriteAllText(dialog.FileName, builder.ToString(), new System.Text.UTF8Encoding(true));
+            _taskLog.Info("已导出任务日志", $"{entries.Count} 条记录 → {Path.GetFileName(dialog.FileName)}");
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(exception.Message, "无法导出任务日志", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private const double TaskLogCollapsedHeight = 34;
+    private const double TaskLogExpandedHeight = 168;
+
+    private bool _taskLogExpanded;
+
+    private void EnsureTaskLogExpanded()
+    {
+        if (_taskLogExpanded) return;
+        _taskLogExpanded = true;
+        TaskLogPanel.Height = TaskLogExpandedHeight;
+        TaskLogPanel.MinHeight = TaskLogExpandedHeight;
+        TaskLogList.Visibility = Visibility.Visible;
+        ToggleTaskLogButton.Content = "收起";
+    }
+
+    private void ToggleTaskLog_Click(object sender, RoutedEventArgs e)
+    {
+        _taskLogExpanded = !_taskLogExpanded;
+        if (_taskLogExpanded)
+        {
+            TaskLogPanel.Height = TaskLogExpandedHeight;
+            TaskLogPanel.MinHeight = TaskLogExpandedHeight;
+            TaskLogList.Visibility = Visibility.Visible;
+            ToggleTaskLogButton.Content = "收起";
+        }
+        else
+        {
+            TaskLogPanel.Height = TaskLogCollapsedHeight;
+            TaskLogPanel.MinHeight = TaskLogCollapsedHeight;
+            TaskLogList.Visibility = Visibility.Collapsed;
+            ToggleTaskLogButton.Content = "展开";
+        }
+    }
+
+    private void UpdateTaskLogSummary()
+    {
+        if (TaskLogSummary is null) return;
+        var entries = _taskLog.Entries;
+        if (entries.Count == 0)
+        {
+            TaskLogSummary.Text = "";
+            return;
+        }
+        var errors = entries.Count(entry => entry.Level == TaskLogLevel.Error);
+        var warnings = entries.Count(entry => entry.Level == TaskLogLevel.Warning);
+        TaskLogSummary.Text = errors > 0
+            ? $"{entries.Count} 条 · {errors} 失败 / {warnings} 警告"
+            : $"{entries.Count} 条记录";
+    }
+
     private void UpdateTaskTimeText()
     {
         var elapsed = _taskStopwatch.Elapsed;
@@ -631,6 +741,8 @@ public partial class UsbTransferView : UserControl, IDisposable
         UpdateTransferSummary();
         TransferProgress.Value = 0;
         TransferTimeText.Text = "";
+        _taskLog.Info("已载入待下发内容",
+            $"新增 {addedFiles} 个文件、{addedDirectories} 个文件夹 · 清单共 {TransferFiles.Count} 个文件、{_transferDirectories.Count} 个文件夹");
     }
 
     private static ScanResult ScanUploadPaths(IEnumerable<string> paths)
@@ -730,6 +842,8 @@ public partial class UsbTransferView : UserControl, IDisposable
         }
         UpdateTransferSummary();
         TransferStatus.Text = removal.Length == 0 ? "没有选中的文件" : $"已移除 {removal.Length} 个文件；目录结构仍会保留。";
+        if (removal.Length > 0)
+            _taskLog.Info($"移除 {removal.Length} 个文件", string.Join("、", removal.Take(5).Select(file => file.Name)));
     }
 
     private void UpdateTransferSummary()
@@ -782,6 +896,11 @@ public partial class UsbTransferView : UserControl, IDisposable
         _progressTimer.Start();
         UpdateTaskTimeText();
 
+        var targetRoots = string.Join("、", targets.Select(target => target.RootPath));
+        EnsureTaskLogExpanded();
+        _taskLog.Info("开始批量下发",
+            $"{targets.Length} 个设备（{targetRoots}）· {files.Length} 个文件 · {directories.Length} 个文件夹 · 单盘数据量 {UsbDriveItem.FormatSize(bytesPerDrive)}");
+
         try
         {
             var outcome = await Task.Run(async () =>
@@ -792,6 +911,9 @@ public partial class UsbTransferView : UserControl, IDisposable
                 var completedDevices = 0;
                 var tasks = targets.Select(async target =>
                 {
+                    var deviceStart = Stopwatch.StartNew();
+                    long deviceCopied = 0;
+                    int deviceSkipped = 0;
                     try
                     {
                         ValidateTargetForWrite(target, bytesPerDrive);
@@ -813,28 +935,35 @@ public partial class UsbTransferView : UserControl, IDisposable
                             if (IsInBlockedFolderRoot(file.DestinationRelativePath, blockedFolderRoots))
                             {
                                 lock (syncLock) skippedItems.Add($"{target.RootPath}：文件夹“{TopLevelSegment(file.DestinationRelativePath)}”已存在，跳过其中内容。");
-                                continue;
-                            }
+                                Interlocked.Increment(ref deviceSkipped);
+                                continue;                            }
                             var destinationPath = BuildSafeDestinationPath(destinationRoot, file.DestinationRelativePath);
                             if (File.Exists(destinationPath) || Directory.Exists(destinationPath))
                             {
                                 lock (syncLock) skippedItems.Add($"{target.RootPath}：同名项“{file.DestinationRelativePath}”已存在，已跳过。");
+                                Interlocked.Increment(ref deviceSkipped);
                                 continue;
                             }
                             Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
                             await CopyFileSafelyAsync(file.FullPath, destinationPath, count =>
                             {
                                 var completed = Interlocked.Add(ref _copiedBytes, count);
+                                Interlocked.Add(ref deviceCopied, count);
                                 ReportTransfer($"并行下发中 · 已复制 {UsbDriveItem.FormatSize(completed)} / {UsbDriveItem.FormatSize(totalBytes)}", completed, totalBytes);
                             }, cancellationToken);
                         }
                         Interlocked.Increment(ref completedDevices);
+                        deviceStart.Stop();
+                        var detail = $"复制 {UsbDriveItem.FormatSize(deviceCopied)} · 用时 {deviceStart.Elapsed.TotalSeconds:0.0} 秒";
+                        if (deviceSkipped > 0) detail += $" · 跳过 {deviceSkipped} 项同名内容";
+                        _taskLog.Success($"{target.RootPath} 下发完成", detail);
                     }
                     catch (OperationCanceledException) { throw; }
                     catch (Exception exception)
                     {
                         lock (syncLock) failures.Add($"{target.RootPath}：{exception.Message}");
                         ReportTransfer($"并行下发中 · 已复制 {UsbDriveItem.FormatSize(Interlocked.Read(ref _copiedBytes))} / {UsbDriveItem.FormatSize(totalBytes)}（{target.RootPath} 失败）", Interlocked.Read(ref _copiedBytes), totalBytes);
+                        _taskLog.Error($"{target.RootPath} 下发失败", exception.Message);
                     }
                 }).ToArray();
 
@@ -855,6 +984,12 @@ public partial class UsbTransferView : UserControl, IDisposable
                     ? $"已完成：{outcome.CompletedDevices} 个设备 · {files.Length} 个文件 · {directories.Length} 个文件夹"
                     : $"已完成 {outcome.CompletedDevices} 个设备；{outcome.SkippedItems.Count} 项同名内容已跳过"
                 : $"完成 {outcome.CompletedDevices} 个设备，{outcome.Failures.Count} 个设备失败";
+
+            var elapsed = _taskStopwatch.Elapsed;
+            var summaryDetail = $"成功 {outcome.CompletedDevices} 个 · 失败 {outcome.Failures.Count} 个 · 跳过 {outcome.SkippedItems.Count} 项 · 实际写入 {UsbDriveItem.FormatSize(Interlocked.Read(ref _copiedBytes))} · 用时 {elapsed.TotalSeconds:0.0} 秒";
+            if (outcome.Failures.Count == 0) _taskLog.Success("批量下发完成", summaryDetail);
+            else _taskLog.Warning("批量下发结束，部分设备未完成", summaryDetail);
+
             var resultMessage = outcome.Failures.Count == 0
                 ? outcome.SkippedItems.Count == 0
                     ? "所有选定设备已完成复制。请在系统中安全弹出设备后再拔出。"
@@ -866,10 +1001,12 @@ public partial class UsbTransferView : UserControl, IDisposable
         catch (OperationCanceledException)
         {
             TransferStatus.Text = "任务已取消；未完成的临时文件已清理。";
+            _taskLog.Warning("批量下发已取消", $"已写入 {UsbDriveItem.FormatSize(Interlocked.Read(ref _copiedBytes))}，未完成的临时文件已清理");
         }
         catch (Exception exception)
         {
             TransferStatus.Text = "任务未完成，请检查设备连接状态。";
+            _taskLog.Error("批量下发异常终止", exception.Message);
             MessageBox.Show(exception.Message, "复制失败", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally
@@ -1002,6 +1139,7 @@ public partial class UsbTransferView : UserControl, IDisposable
         _driveRefreshTimer.Stop();
         _taskTimer.Stop();
         _progressTimer.Stop();
+        _taskLog.Dispose();
         _transferCancellation?.Cancel();
         _transferCancellation?.Dispose();
     }
