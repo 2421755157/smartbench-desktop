@@ -56,6 +56,9 @@ public partial class UsbTransferView : UserControl, IDisposable
         DataContext = this;
         _settings = AppSettings.Load();
         AutoFormatCheck.IsChecked = _settings.AutoFormatNotReady;
+        // 启动即写一条日志，让任务日志从打开软件起就有内容可看。
+        var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.7.0";
+        _taskLog.Info("程序启动", $"智控工作台 v{version} · 开始监控可移动设备（每 3 秒刷新一次）");
         RefreshDrives();
         _driveRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
         _driveRefreshTimer.Tick += (_, _) => { if (!_isTransferring && !_isFormatting) RefreshDrives(); };
@@ -179,22 +182,41 @@ public partial class UsbTransferView : UserControl, IDisposable
             if (!existingByRoot.TryGetValue(device.RootPath, out var existing))
             {
                 finalItems.Add(device);
+                LogDriveArrived(device);
                 continue;
             }
 
             // 盘符被别的设备复用时（例如拔掉 U 盘 A 插上 U 盘 B 占用同一盘符），不能把勾选状态带过去。
             var identityChanged = !string.Equals(existing.Identity, device.Identity, StringComparison.OrdinalIgnoreCase);
             var wasSelected = existing.IsSelected;
+            var wasReady = existing.IsReady;
+            var previousIdentity = existing.Identity;
             existing.ApplyFrom(device);
             existing.IsSelected = identityChanged ? false : wasSelected;
             finalItems.Add(existing);
+
+            if (identityChanged)
+            {
+                // 同一盘符换了设备：先记旧设备离开，再记新设备接入。
+                _taskLog.Warning("U 盘已移除", $"{device.RootPath} 上的原设备已断开");
+                LogDriveArrived(existing);
+            }
+            else if (wasReady != device.IsReady)
+            {
+                if (device.IsReady)
+                    _taskLog.Success("U 盘已就绪", DescribeDrive(device));
+                else
+                    _taskLog.Warning("U 盘不可读取", $"{DescribeDrive(device)} · {device.State}");
+            }
         }
 
         // 用 Move / Insert / Remove 做真正的增量操作，避免 Clear + Add 重建行容器
         // （重建会丢失滚动位置，并让 DataGrid 重新生成所有行视觉）。
         for (var index = Drives.Count - 1; index >= 0; index--)
         {
-            if (!finalItems.Contains(Drives[index])) Drives.RemoveAt(index);
+            if (finalItems.Contains(Drives[index])) continue;
+            _taskLog.Warning("U 盘已移除", DescribeDrive(Drives[index]));
+            Drives.RemoveAt(index);
         }
 
         for (var index = 0; index < finalItems.Count; index++)
@@ -206,8 +228,17 @@ public partial class UsbTransferView : UserControl, IDisposable
         }
     }
 
-    private static int IndexOfItem(ObservableCollection<UsbDriveItem> items, UsbDriveItem target)
+    /// <summary>新设备接入时写日志；待格式化的设备用警告级别区分。</summary>
+    private void LogDriveArrived(UsbDriveItem device)
     {
+        if (device.IsReady) _taskLog.Success("检测到 U 盘", DescribeDrive(device));
+        else _taskLog.Warning("检测到 U 盘（不可写入）", $"{DescribeDrive(device)} · {device.State}");
+    }
+
+    private static string DescribeDrive(UsbDriveItem device) =>
+        $"{device.RootPath} {device.Label} · {(device.IsReady ? device.FreeSpaceText : device.State)}";
+
+    private static int IndexOfItem(ObservableCollection<UsbDriveItem> items, UsbDriveItem target)    {
         for (var index = 0; index < items.Count; index++)
         {
             if (ReferenceEquals(items[index], target)) return index;
@@ -861,7 +892,7 @@ public partial class UsbTransferView : UserControl, IDisposable
         }
 
         var approval = MessageBox.Show(
-            $"确认将 {files.Length} 个文件、{directories.Length} 个文件夹复制到 {targets.Length} 个 U 盘？\n\n文件夹会按原名称和完整层级（包含空目录）复制到 U 盘根目录；单个文件也直接复制到根目录。若目标已有同名文件或文件夹，会跳过该项且不会创建自动改名副本。",
+            $"确认将 {files.Length} 个文件、{directories.Length} 个文件夹复制到 {targets.Length} 个 U 盘？\n\n文件夹会按原名称和完整层级（包含空目录）复制到 U 盘根目录；单个文件也直接复制到根目录。目标已有同名文件时会被覆盖，同名文件夹会合并写入（其中的同名文件同样覆盖）；只有目标存在同名文件夹、而源是文件时才跳过该项。",
             "确认批量下发", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
         if (approval != MessageBoxResult.Yes) return;
 
@@ -892,44 +923,42 @@ public partial class UsbTransferView : UserControl, IDisposable
             var outcome = await Task.Run(async () =>
             {
                 var failures = new List<string>();
-                var skippedItems = new List<string>();
+                var conflicts = new List<string>();
                 var syncLock = new object();
                 var completedDevices = 0;
+                var overwrittenTotal = 0;
                 var tasks = targets.Select(async target =>
                 {
                     var deviceStart = Stopwatch.StartNew();
                     long deviceCopied = 0;
-                    int deviceSkipped = 0;
+                    var deviceOverwritten = 0;
+                    var deviceConflicts = 0;
                     try
                     {
                         ValidateTargetForWrite(target, bytesPerDrive);
                         ValidateSourceIsNotTarget(target);
                         var destinationRoot = target.RootPath;
                         Directory.CreateDirectory(destinationRoot);
-                        var blockedFolderRoots = FindExistingFolderRoots(destinationRoot, directories);
 
+                        // 文件夹按层级直接创建：目标已存在同名文件夹时合并写入，不再整块跳过。
                         foreach (var directory in directories)
                         {
                             cancellationToken.ThrowIfCancellationRequested();
-                            if (IsInBlockedFolderRoot(directory.DestinationRelativePath, blockedFolderRoots)) continue;
                             Directory.CreateDirectory(BuildSafeDestinationPath(destinationRoot, directory.DestinationRelativePath));
                         }
 
                         foreach (var file in files)
                         {
                             cancellationToken.ThrowIfCancellationRequested();
-                            if (IsInBlockedFolderRoot(file.DestinationRelativePath, blockedFolderRoots))
-                            {
-                                lock (syncLock) skippedItems.Add($"{target.RootPath}：文件夹“{TopLevelSegment(file.DestinationRelativePath)}”已存在，跳过其中内容。");
-                                Interlocked.Increment(ref deviceSkipped);
-                                continue;                            }
                             var destinationPath = BuildSafeDestinationPath(destinationRoot, file.DestinationRelativePath);
-                            if (File.Exists(destinationPath) || Directory.Exists(destinationPath))
+                            // 同名目录无法用文件覆盖，只有这一种情况仍按冲突处理
+                            if (Directory.Exists(destinationPath))
                             {
-                                lock (syncLock) skippedItems.Add($"{target.RootPath}：同名项“{file.DestinationRelativePath}”已存在，已跳过。");
-                                Interlocked.Increment(ref deviceSkipped);
+                                lock (syncLock) conflicts.Add($"{target.RootPath}：目标存在同名文件夹“{file.DestinationRelativePath}”，无法用文件覆盖。");
+                                deviceConflicts++;
                                 continue;
                             }
+                            var willOverwrite = File.Exists(destinationPath);
                             Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
                             await CopyFileSafelyAsync(file.FullPath, destinationPath, count =>
                             {
@@ -937,11 +966,14 @@ public partial class UsbTransferView : UserControl, IDisposable
                                 Interlocked.Add(ref deviceCopied, count);
                                 ReportTransfer($"并行下发中 · 已复制 {UsbDriveItem.FormatSize(completed)} / {UsbDriveItem.FormatSize(totalBytes)}", completed, totalBytes);
                             }, cancellationToken);
+                            if (willOverwrite) deviceOverwritten++;
                         }
                         Interlocked.Increment(ref completedDevices);
+                        Interlocked.Add(ref overwrittenTotal, deviceOverwritten);
                         deviceStart.Stop();
                         var detail = $"复制 {UsbDriveItem.FormatSize(deviceCopied)} · 用时 {deviceStart.Elapsed.TotalSeconds:0.0} 秒";
-                        if (deviceSkipped > 0) detail += $" · 跳过 {deviceSkipped} 项同名内容";
+                        if (deviceOverwritten > 0) detail += $" · 覆盖同名文件 {deviceOverwritten} 个";
+                        if (deviceConflicts > 0) detail += $" · {deviceConflicts} 项与同名文件夹冲突未写入";
                         _taskLog.Success($"{target.RootPath} 下发完成", detail);
                     }
                     catch (OperationCanceledException) { throw; }
@@ -960,26 +992,26 @@ public partial class UsbTransferView : UserControl, IDisposable
                 if (cancellationToken.IsCancellationRequested)
                     cancellationToken.ThrowIfCancellationRequested();
 
-                return new TransferOutcome(completedDevices, failures, skippedItems);
+                return new TransferOutcome(completedDevices, failures, conflicts, overwrittenTotal);
             });
 
             RefreshTransferProgress();
             TransferProgress.Value = totalBytes == 0 ? 100 : Math.Min(100, 100d * Interlocked.Read(ref _copiedBytes) / totalBytes);
             TransferStatus.Text = outcome.Failures.Count == 0
-                ? outcome.SkippedItems.Count == 0
+                ? outcome.Conflicts.Count == 0
                     ? $"已完成：{outcome.CompletedDevices} 个设备 · {files.Length} 个文件 · {directories.Length} 个文件夹"
-                    : $"已完成 {outcome.CompletedDevices} 个设备；{outcome.SkippedItems.Count} 项同名内容已跳过"
+                    : $"已完成 {outcome.CompletedDevices} 个设备；{outcome.Conflicts.Count} 项与同名文件夹冲突未写入"
                 : $"完成 {outcome.CompletedDevices} 个设备，{outcome.Failures.Count} 个设备失败";
 
             var elapsed = _taskStopwatch.Elapsed;
-            var summaryDetail = $"成功 {outcome.CompletedDevices} 个 · 失败 {outcome.Failures.Count} 个 · 跳过 {outcome.SkippedItems.Count} 项 · 实际写入 {UsbDriveItem.FormatSize(Interlocked.Read(ref _copiedBytes))} · 用时 {elapsed.TotalSeconds:0.0} 秒";
+            var summaryDetail = $"成功 {outcome.CompletedDevices} 个 · 失败 {outcome.Failures.Count} 个 · 覆盖同名 {outcome.Overwritten} 个 · 冲突 {outcome.Conflicts.Count} 项 · 实际写入 {UsbDriveItem.FormatSize(Interlocked.Read(ref _copiedBytes))} · 用时 {elapsed.TotalSeconds:0.0} 秒";
             if (outcome.Failures.Count == 0) _taskLog.Success("批量下发完成", summaryDetail);
             else _taskLog.Warning("批量下发结束，部分设备未完成", summaryDetail);
 
             var resultMessage = outcome.Failures.Count == 0
-                ? outcome.SkippedItems.Count == 0
+                ? outcome.Conflicts.Count == 0
                     ? "所有选定设备已完成复制。请在系统中安全弹出设备后再拔出。"
-                    : $"所有选定设备已完成复制；以下 {outcome.SkippedItems.Count} 项因目标存在同名内容而跳过，未创建改名副本：\n\n{string.Join("\n", outcome.SkippedItems.Take(20))}"
+                    : $"所有选定设备已完成复制；以下 {outcome.Conflicts.Count} 项与目标上的同名文件夹冲突，未写入：\n\n{string.Join("\n", outcome.Conflicts.Take(20))}"
                 : $"已完成 {outcome.CompletedDevices} 个设备；以下设备未完成：\n\n{string.Join("\n", outcome.Failures)}";
             MessageBox.Show(resultMessage, outcome.Failures.Count == 0 ? "批量下发完成" : "批量下发结果", MessageBoxButton.OK, outcome.Failures.Count == 0 ? MessageBoxImage.Information : MessageBoxImage.Warning);
             RefreshDrives();
@@ -1029,24 +1061,6 @@ public partial class UsbTransferView : UserControl, IDisposable
             throw new IOException($"{target.RootPath} 可用空间不足。");
     }
 
-    private static HashSet<string> FindExistingFolderRoots(string destinationRoot, IEnumerable<ScannedDirectory> directories)
-    {
-        var blocked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var root in directories.Select(directory => TopLevelSegment(directory.DestinationRelativePath)).Distinct(StringComparer.OrdinalIgnoreCase))
-        {
-            var targetPath = BuildSafeDestinationPath(destinationRoot, root);
-            if (File.Exists(targetPath) || Directory.Exists(targetPath)) blocked.Add(root);
-        }
-        return blocked;
-    }
-
-    private static bool IsInBlockedFolderRoot(string relativePath, ISet<string> blockedRoots) =>
-        blockedRoots.Contains(TopLevelSegment(relativePath));
-
-    private static string TopLevelSegment(string relativePath) =>
-        relativePath.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()
-        ?? throw new InvalidOperationException("下发路径不包含有效名称。");
-
     private static string BuildSafeDestinationPath(string destinationRoot, string relativePath)
     {
         var segments = relativePath.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries)
@@ -1065,10 +1079,8 @@ public partial class UsbTransferView : UserControl, IDisposable
 
     private async Task CopyFileSafelyAsync(string source, string destinationPath, Action<int> onBytesCopied, CancellationToken cancellationToken)
     {
-        if (File.Exists(destinationPath) || Directory.Exists(destinationPath))
-            throw new IOException($"目标位置已有同名项：{Path.GetFileName(destinationPath)}。为避免覆盖或创建改名副本，已跳过该文件。");
-
         var target = destinationPath;
+        // 先写临时文件再原子替换：中途失败或取消时不会把目标上的原有文件破坏成半截。
         var temporary = target + $".{Guid.NewGuid():N}.partial";
         const int bufferSize = 128 * 1024;
         try
@@ -1086,7 +1098,8 @@ public partial class UsbTransferView : UserControl, IDisposable
                 await destinationStream.FlushAsync(cancellationToken);
                 destinationStream.Flush(flushToDisk: true);
             }
-            File.Move(temporary, target);
+            // overwrite: true —— 目标已有同名文件时直接覆盖（先写临时文件，此处是原子替换）
+            File.Move(temporary, target, overwrite: true);
         }
         catch
         {
@@ -1133,5 +1146,5 @@ public partial class UsbTransferView : UserControl, IDisposable
     private sealed record ScanResult(IReadOnlyList<string> Roots, IReadOnlyList<ScannedDirectory> Directories, IReadOnlyList<ScannedFile> Files);
     private sealed record ScannedDirectory(string DestinationRelativePath);
     private sealed record ScannedFile(string FullPath, string DestinationRelativePath, long SizeBytes);
-    private sealed record TransferOutcome(int CompletedDevices, IReadOnlyList<string> Failures, IReadOnlyList<string> SkippedItems);
+    private sealed record TransferOutcome(int CompletedDevices, IReadOnlyList<string> Failures, IReadOnlyList<string> Conflicts, int Overwritten);
 }
