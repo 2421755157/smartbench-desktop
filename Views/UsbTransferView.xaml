@@ -35,13 +35,13 @@
   <Grid Margin="20">
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto" />
+      <!-- 设备区、文件区、任务区三块按比例分配剩余高度，中间用分隔条隔开（必须隔开，
+           否则多个 * 行会分到重叠位置）。表格自身填满所属区块并在内部滚动。 -->
+      <RowDefinition Height="1*" MinHeight="130" />
       <RowDefinition Height="Auto" />
-      <!-- 文件区按内容固定高度，文件表格始终可见 -->
+      <RowDefinition Height="1.2*" MinHeight="150" />
       <RowDefinition Height="Auto" />
-      <!-- 分隔条：拖动可调整下方任务区（任务日志）的高度 -->
-      <RowDefinition Height="Auto" />
-      <!-- 任务区：固定 284px 保证任务日志在窗口内可见，拖动分隔条可自行调整 -->
-      <RowDefinition Height="284" />
+      <RowDefinition Height="1.15*" MinHeight="200" />
     </Grid.RowDefinitions>
     <Border Grid.Row="0" Background="#FFF7E8" BorderBrush="#F2D8A5" BorderThickness="1" CornerRadius="10" Padding="12,9" Margin="0,0,0,14">
       <Grid>
@@ -52,22 +52,23 @@
       </Grid>
     </Border>
 
-    <!-- 设备区：固定高度，设备数量有上限（10 个），不需要随窗口拉伸 -->
-    <Border x:Name="DrivePanel" Grid.Row="1" Background="White" BorderBrush="#E7ECF3" BorderThickness="1" CornerRadius="12" Padding="14,11" Margin="0,0,0,10" VerticalAlignment="Top">
+    <!-- 设备区 -->
+    <Border x:Name="DrivePanel" Grid.Row="1" Background="White" BorderBrush="#E7ECF3" BorderThickness="1" CornerRadius="12" Padding="14,11" VerticalAlignment="Stretch">
         <Grid>
-          <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-          <DockPanel Grid.Row="0" Margin="0,0,0,6">
-            <TextBlock Text="U 盘设备" FontSize="16" FontWeight="Bold" VerticalAlignment="Center" />
-            <TextBlock x:Name="DriveSummary" DockPanel.Dock="Right" Text="正在检查设备…" Foreground="#56637B" FontSize="12.5" VerticalAlignment="Center" />
+          <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+          <DockPanel Grid.Row="0" Margin="0,0,0,8" LastChildFill="False">
+            <TextBlock DockPanel.Dock="Left" Text="U 盘设备" FontSize="16" FontWeight="Bold" VerticalAlignment="Center" />
+            <TextBlock DockPanel.Dock="Left" x:Name="DriveSummary" Text="正在检查设备…" Foreground="#56637B" FontSize="12.5" VerticalAlignment="Center" Margin="10,0,0,0" />
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+              <Button Padding="8,4" FontSize="12" Click="SelectAllDrives_Click">全选</Button>
+              <Button Padding="8,4" FontSize="12" Margin="6,0,0,0" Click="ClearDriveSelection_Click">清空选择</Button>
+              <Button Padding="8,4" FontSize="12" Margin="6,0,0,0" Background="#FFF1F0" BorderBrush="#E8B4B0" Click="BatchFormat_Click" ToolTip="对勾选的全部 U 盘执行快速格式化">批量格式化</Button>
+              <CheckBox x:Name="AutoFormatCheck" Content="需格式化时自动处理" VerticalAlignment="Center" Margin="12,0,8,0" FontSize="12" Cursor="Hand" Checked="SettingCheck_Changed" Unchecked="SettingCheck_Changed" ToolTip="开启后，插入无法读取（提示需格式化）的 U 盘时，本软件自动执行快速格式化，文件系统默认 FAT32（容量大于 32GB 时使用 exFAT）。数据将全部清除，请确认后再开启。" />
+              <Border Background="#ECF2FF" Padding="9,4" CornerRadius="12" VerticalAlignment="Center"><TextBlock Text="最多 10 个" Foreground="#246BFD" FontSize="12" FontWeight="SemiBold"/></Border>
+            </StackPanel>
           </DockPanel>
-          <WrapPanel Grid.Row="1" Margin="0,0,0,6">
-            <Button Click="SelectAllDrives_Click">全选</Button>
-            <Button Margin="7,0,0,0" Click="ClearDriveSelection_Click">清空选择</Button>
-            <Button Margin="7,0,0,0" Background="#FFF1F0" BorderBrush="#E8B4B0" Click="BatchFormat_Click" ToolTip="对勾选的全部 U 盘执行快速格式化">批量格式化</Button>
-            <CheckBox x:Name="AutoFormatCheck" Content="插入需格式化 U 盘时自动格式化" VerticalAlignment="Center" Margin="12,0,8,0" FontSize="13" Cursor="Hand" Checked="SettingCheck_Changed" Unchecked="SettingCheck_Changed" ToolTip="开启后，插入无法读取（提示需格式化）的 U 盘时，本软件自动执行快速格式化，文件系统默认 FAT32（容量大于 32GB 时使用 exFAT）。数据将全部清除，请确认后再开启。" />
-            <Border Background="#ECF2FF" Padding="9,4" CornerRadius="12" VerticalAlignment="Center"><TextBlock Text="最多 10 个" Foreground="#246BFD" FontSize="12" FontWeight="SemiBold"/></Border>
-          </WrapPanel>
-          <DataGrid x:Name="DriveGrid" Grid.Row="2" ItemsSource="{Binding Drives}" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" CanUserResizeRows="False" HeadersVisibility="Column" RowHeaderWidth="0" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#EEF1F6" BorderThickness="0" IsReadOnly="False" Height="76" RowHeight="30" FontSize="13" ColumnHeaderStyle="{StaticResource GridHeader}">
+          <!-- 设备表格：填满设备区剩余高度，设备多时表格内部滚动 -->
+          <DataGrid x:Name="DriveGrid" Grid.Row="1" ItemsSource="{Binding Drives}" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" CanUserResizeRows="False" HeadersVisibility="Column" RowHeaderWidth="0" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#EEF1F6" BorderBrush="#EEF1F6" BorderThickness="1" IsReadOnly="False" RowHeight="32" FontSize="13" ColumnHeaderStyle="{StaticResource GridHeader}" ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
             <DataGrid.Columns>
               <DataGridTemplateColumn Header="下发" Width="52"><DataGridTemplateColumn.CellTemplate><DataTemplate><CheckBox Style="{StaticResource GridCheck}" IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" ToolTip="勾选后用于批量下发或批量格式化" /></DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn>
               <DataGridTextColumn Header="盘符" Width="60" Binding="{Binding RootPath}" IsReadOnly="True" />
@@ -80,11 +81,14 @@
         </Grid>
       </Border>
 
-      <Border x:Name="FilePanel" Grid.Row="2" Background="White" BorderBrush="#E7ECF3" BorderThickness="1" CornerRadius="12" Padding="14,12" Margin="0,0,0,10" VerticalAlignment="Stretch" MinHeight="150">
+      <!-- 分隔条：拖动可调整设备区与文件区的高度比例 -->
+      <GridSplitter Grid.Row="2" Height="8" HorizontalAlignment="Stretch" VerticalAlignment="Center" Background="Transparent" ResizeDirection="Rows" Margin="0,4,0,4" />
+
+      <Border x:Name="FilePanel" Grid.Row="3" Background="White" BorderBrush="#E7ECF3" BorderThickness="1" CornerRadius="12" Padding="14,12" VerticalAlignment="Stretch" MinHeight="150">
         <Grid>
           <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-          <DockPanel Grid.Row="0" Margin="0,0,0,8">
-            <TextBlock Text="选择文件" FontSize="16" FontWeight="Bold" VerticalAlignment="Center" />
+          <DockPanel Grid.Row="0" Margin="0,0,0,8" LastChildFill="False">
+            <TextBlock DockPanel.Dock="Left" Text="选择文件" FontSize="16" FontWeight="Bold" VerticalAlignment="Center" />
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
               <Button Padding="8,4" FontSize="12" Click="SelectAllFiles_Click">全选 / 反选</Button>
               <Button Padding="8,4" FontSize="12" Margin="6,0,0,0" Click="RemoveSelectedFiles_Click">移除选中</Button>
@@ -96,38 +100,33 @@
 
           <Border x:Name="DropSurface" Grid.Row="1" Margin="0,0,0,8" BorderBrush="#AFC7FF" BorderThickness="1.5" Background="#F5F8FF" CornerRadius="9" AllowDrop="True" DragEnter="DropSurface_DragEnter" DragLeave="DropSurface_DragLeave" DragOver="DropSurface_DragOver" Drop="DropSurface_Drop">
             <DockPanel Margin="10,2">
-              <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                <TextBlock Text="文件夹保留目录层级 · 支持任意格式" Foreground="#56637B" FontSize="11.5" VerticalAlignment="Center"/>
-              </StackPanel>
+              <TextBlock x:Name="TransferSummary" DockPanel.Dock="Right" Text="拖入文件或文件夹，支持任意格式并保留目录层级" Foreground="#56637B" FontSize="11.5" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="420"/>
               <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                <Border Width="22" Height="22" Background="#DDE8FF" CornerRadius="11" Margin="0,0,8,0"><TextBlock Text="↓" Foreground="#246BFD" FontWeight="Bold" FontSize="14" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
-                <StackPanel VerticalAlignment="Center">
-                  <TextBlock Text="拖拽任意文件或文件夹到这里" FontWeight="SemiBold" FontSize="12.5"/>
-                  <TextBlock x:Name="TransferSummary" Text="拖入文件或文件夹，支持任意格式并保留目录层级" Foreground="#56637B" FontSize="11" Margin="0,1,0,0"/>
-                </StackPanel>
+                <Border Width="20" Height="20" Background="#DDE8FF" CornerRadius="10" Margin="0,0,8,0"><TextBlock Text="↓" Foreground="#246BFD" FontWeight="Bold" FontSize="13" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+                <TextBlock Text="拖拽任意文件或文件夹到这里" FontWeight="SemiBold" FontSize="12.5" VerticalAlignment="Center"/>
               </StackPanel>
             </DockPanel>
           </Border>
 
-          <!-- 文件清单：无文件时给出空状态提示，避免看起来像表格消失 -->
-          <Grid Grid.Row="2" Height="66">
-            <DataGrid x:Name="TransferFileGrid" ItemsSource="{Binding TransferFiles}" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" CanUserResizeRows="False" HeadersVisibility="Column" RowHeaderWidth="0" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#EEF1F6" BorderBrush="#E7ECF3" BorderThickness="1" RowHeight="30" FontSize="13" ColumnHeaderStyle="{StaticResource GridHeader}">
+          <!-- 文件清单：填满文件区剩余高度，文件多时表格内部滚动；无文件时显示空状态提示 -->
+          <Grid Grid.Row="2">
+            <DataGrid x:Name="TransferFileGrid" ItemsSource="{Binding TransferFiles}" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" CanUserResizeRows="False" HeadersVisibility="Column" RowHeaderWidth="0" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#EEF1F6" BorderBrush="#E7ECF3" BorderThickness="1" RowHeight="31" FontSize="13" ColumnHeaderStyle="{StaticResource GridHeader}" ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
               <DataGrid.Columns>
                 <DataGridTemplateColumn Header="下发" Width="52"><DataGridTemplateColumn.CellTemplate><DataTemplate><CheckBox Style="{StaticResource GridCheck}" IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" ToolTip="勾选的文件才会被下发" /></DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn>
                 <DataGridTextColumn Header="文件路径" Width="*" Binding="{Binding DisplayPath}" IsReadOnly="True" />
                 <DataGridTextColumn Header="大小" Width="100" Binding="{Binding SizeText}" IsReadOnly="True" />
               </DataGrid.Columns>
             </DataGrid>
-            <TextBlock x:Name="TransferEmptyHint" Text="尚未添加文件 —— 点击“添加文件”或把文件拖到上方区域" Foreground="#8A97AD" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,22,0,0" IsHitTestVisible="False" />
+            <TextBlock x:Name="TransferEmptyHint" Text="尚未添加文件 —— 点击“添加文件”或把文件拖到上方区域" Foreground="#8A97AD" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,18,0,0" IsHitTestVisible="False" />
           </Grid>
         </Grid>
       </Border>
 
-    <!-- 分隔条：拖动可调整下方任务区（任务日志）的高度 -->
-    <GridSplitter Grid.Row="3" Height="7" HorizontalAlignment="Stretch" VerticalAlignment="Center" Background="Transparent" ResizeDirection="Rows" Margin="0,4,0,4" />
+    <!-- 分隔条：拖动可调整文件区与任务区（任务日志）的高度比例 -->
+    <GridSplitter Grid.Row="4" Height="8" HorizontalAlignment="Stretch" VerticalAlignment="Center" Background="Transparent" ResizeDirection="Rows" Margin="0,4,0,4" />
 
-    <!-- 任务区：进度摘要 + 任务日志。任务区吃掉剩余空间，日志面板撑满其内部 -->
-    <Border x:Name="TaskPanel" Grid.Row="4" Background="White" BorderBrush="#E7ECF3" BorderThickness="1" CornerRadius="12" Padding="12" Margin="0,0,0,0" VerticalAlignment="Stretch">
+    <!-- 任务区：进度摘要 + 任务日志。任务区按比例分配高度，日志面板撑满其内部 -->
+    <Border x:Name="TaskPanel" Grid.Row="5" Background="White" BorderBrush="#E7ECF3" BorderThickness="1" CornerRadius="12" Padding="12" Margin="0,0,0,0" VerticalAlignment="Stretch">
       <Grid>
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto" />
