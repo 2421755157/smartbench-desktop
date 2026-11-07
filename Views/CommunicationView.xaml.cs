@@ -62,7 +62,8 @@ public partial class CommunicationView : UserControl, IDisposable
         RefreshPorts();
         RestoreSettings();
         RefreshModbusAddressHint();
-        AppendLog(SerialLogBox, "系统", "请选择端口并打开串口。");
+        // 没有串口时 RefreshPorts 已经给出具体排查提示，这里不再重复通用文案。
+        if (SerialPortSelector.IsEnabled) AppendLog(SerialLogBox, "系统", "请选择端口并打开串口。");
         AppendLog(ModbusLogBox, "系统", "支持 FC03、FC04 读取与 FC06、FC16 写入。读取会校验站号、功能码、帧长和 CRC16。");
         AppendLog(UdpLogBox, "系统", "监听默认绑定本机接口。请勿将调试端口直接暴露在公网。");
     }
@@ -110,15 +111,32 @@ public partial class CommunicationView : UserControl, IDisposable
 
     private void RefreshPorts_Click(object sender, RoutedEventArgs e) => RefreshPorts();
 
+    private const string NoPortPlaceholder = "无可用串口";
+
     private void RefreshPorts()
     {
         var selectedSerial = SerialPortSelector.SelectedItem as string;
         var selectedModbus = ModbusPortSelector.SelectedItem as string;
         var ports = SerialPort.GetPortNames().OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToArray();
+
+        if (ports.Length == 0)
+        {
+            // 没有串口时给一个明确的占位项，避免下拉框看起来是空白故障。
+            foreach (var selector in new[] { SerialPortSelector, ModbusPortSelector })
+            {
+                selector.ItemsSource = new[] { NoPortPlaceholder };
+                selector.SelectedIndex = 0;
+                selector.IsEnabled = false;
+            }
+            AppendLog(SerialLogBox, "系统", "未检测到串口。请确认 USB 转串口设备已插好，且驱动已安装（设备管理器可见 COMx）。");
+            return;
+        }
+
+        foreach (var selector in new[] { SerialPortSelector, ModbusPortSelector }) selector.IsEnabled = true;
         SerialPortSelector.ItemsSource = ports;
         ModbusPortSelector.ItemsSource = ports;
-        SerialPortSelector.SelectedItem = ports.Contains(selectedSerial) ? selectedSerial : ports.FirstOrDefault();
-        ModbusPortSelector.SelectedItem = ports.Contains(selectedModbus) ? selectedModbus : ports.FirstOrDefault();
+        SerialPortSelector.SelectedItem = ports.Contains(selectedSerial ?? string.Empty) ? selectedSerial : ports.FirstOrDefault();
+        ModbusPortSelector.SelectedItem = ports.Contains(selectedModbus ?? string.Empty) ? selectedModbus : ports.FirstOrDefault();
     }
 
     private void RestoreSettings()
@@ -164,7 +182,7 @@ public partial class CommunicationView : UserControl, IDisposable
 
     private void SaveSettings()
     {
-        _settings.SerialPort = SerialPortSelector.SelectedItem as string ?? string.Empty;
+        _settings.SerialPort = PortForSettings(SerialPortSelector);
         _settings.SerialBaud = ComboContent(SerialBaudSelector);
         _settings.SerialDataBits = ComboContent(SerialDataBits);
         _settings.SerialParity = ComboContent(SerialParity);
@@ -173,7 +191,7 @@ public partial class CommunicationView : UserControl, IDisposable
         _settings.SerialLineEnding = ComboContent(SerialLineEndingSelector);
         _settings.SerialAutoInterval = SerialAutoIntervalBox.Text;
 
-        _settings.ModbusPort = ModbusPortSelector.SelectedItem as string ?? string.Empty;
+        _settings.ModbusPort = PortForSettings(ModbusPortSelector);
         _settings.ModbusBaud = ComboContent(ModbusBaudSelector);
         _settings.ModbusDataBits = ComboContent(ModbusDataBits);
         _settings.ModbusParity = ComboContent(ModbusParity);
@@ -937,7 +955,17 @@ public partial class CommunicationView : UserControl, IDisposable
 
     private void SetModbusStatus(string text) => Dispatcher.InvokeAsync(() => ModbusStatusText.Text = text);
 
-    private static string RequiredPort(ComboBox selector) => selector.SelectedItem as string ?? throw new InvalidOperationException("当前未发现可用串口。请检查设备连接后刷新。");
+    /// <summary>占位项不能写进设置，否则下次启动会读到假的端口名。</summary>
+    private static string PortForSettings(ComboBox selector) =>
+        selector.SelectedItem is string port && port != NoPortPlaceholder ? port : string.Empty;
+
+    private static string RequiredPort(ComboBox selector)
+    {
+        var port = selector.SelectedItem as string;
+        if (string.IsNullOrWhiteSpace(port) || port == NoPortPlaceholder)
+            throw new InvalidOperationException("当前未发现可用串口。请检查设备连接后点击“刷新串口”。");
+        return port;
+    }
     private static int ComboNumber(ComboBox selector) => int.Parse(((ComboBoxItem)selector.SelectedItem).Content.ToString()!);
     private static string ComboText(ComboBox selector) => ((ComboBoxItem)selector.SelectedItem).Content.ToString()!;
     private static Parity ParseParity(ComboBox selector) => Enum.Parse<Parity>(((ComboBoxItem)selector.SelectedItem).Content.ToString()!);

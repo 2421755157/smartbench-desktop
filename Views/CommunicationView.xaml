@@ -155,8 +155,8 @@
                   <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
-                <DockPanel Grid.Row="0" Margin="0,0,0,8">
-                  <TextBlock Text="发送内容" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <DockPanel Grid.Row="0" Margin="0,0,0,8" LastChildFill="False">
+                  <TextBlock DockPanel.Dock="Left" Text="发送内容" FontWeight="SemiBold" VerticalAlignment="Center" />
                   <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0">
                     <CheckBox x:Name="SerialSendAsHex" Content="HEX 格式" FontSize="12" Margin="0,0,12,0" VerticalAlignment="Center" />
                     <CheckBox x:Name="SerialAutoSend" Content="循环" FontSize="12" Checked="SerialAutoSend_Checked" Unchecked="SerialAutoSend_Unchecked" Margin="0,0,6,0" VerticalAlignment="Center" />
@@ -183,8 +183,8 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
                   </Grid.RowDefinitions>
-                  <DockPanel>
-                    <StackPanel Orientation="Horizontal">
+                  <DockPanel LastChildFill="False">
+                    <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
                       <TextBlock Text="收发日志" Foreground="White" FontWeight="SemiBold" />
                       <TextBlock Text=" · HEX / 文本对照" Foreground="#7F94B3" FontSize="11" />
                     </StackPanel>
@@ -324,8 +324,8 @@
                     <RowDefinition Height="*" />
                     <RowDefinition Height="Auto" />
                   </Grid.RowDefinitions>
-                  <DockPanel>
-                    <StackPanel>
+                  <DockPanel LastChildFill="False">
+                    <StackPanel DockPanel.Dock="Left">
                       <TextBlock Text="寄存器数据窗口" FontWeight="SemiBold" />
                       <TextBlock Text="协议地址从 0 开始；数值支持十进制或 0x 十六进制" FontSize="11" Foreground="#69788C" Margin="0,3,0,0" />
                     </StackPanel>
@@ -363,7 +363,7 @@
                       <DataGridTextColumn Header="状态" Binding="{Binding State}" IsReadOnly="True" Width="62" />
                     </DataGrid.Columns>
                   </DataGrid>
-                  <TextBlock Grid.Row="2" Text="提示：输入寄存器（04）为只读；“写入选中”仅对保持寄存器（03）发送 06 指令。" FontSize="11" Foreground="#69788C" />
+                  <TextBlock Grid.Row="2" Text="提示：输入寄存器（04）为只读；“写入选中”仅对保持寄存器（03）发送 06 指令。" FontSize="11" Foreground="#69788C" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
                 </Grid>
               </Border>
 
@@ -373,8 +373,8 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
                   </Grid.RowDefinitions>
-                  <DockPanel>
-                    <TextBlock Text="Modbus 帧日志" Foreground="White" FontWeight="SemiBold" VerticalAlignment="Center" />
+                  <DockPanel LastChildFill="False">
+                    <TextBlock DockPanel.Dock="Left" Text="Modbus 帧日志" Foreground="White" FontWeight="SemiBold" VerticalAlignment="Center" />
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                       <Button Padding="9,3" Margin="0,0,6,0" Click="SaveModbusLog_Click">保存</Button>
                       <Button Padding="9,3" Click="ClearModbusLog_Click">清空</Button>
@@ -443,8 +443,8 @@
                   <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
-                <DockPanel Grid.Row="0" Margin="0,0,0,8">
-                  <TextBlock Text="UDP 数据报" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <DockPanel Grid.Row="0" Margin="0,0,0,8" LastChildFill="False">
+                  <TextBlock DockPanel.Dock="Left" Text="UDP 数据报" FontWeight="SemiBold" VerticalAlignment="Center" />
                   <CheckBox x:Name="UdpSendAsHex" DockPanel.Dock="Right" Content="HEX 格式" FontSize="12" VerticalAlignment="Center" Margin="14,0,0,0" />
                 </DockPanel>
 
@@ -466,8 +466,8 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
                   </Grid.RowDefinitions>
-                  <DockPanel>
-                    <StackPanel Orientation="Horizontal">
+                  <DockPanel LastChildFill="False">
+                    <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
                       <TextBlock Text="UDP 收发日志" Foreground="White" FontWeight="SemiBold" />
                       <TextBlock Text=" · HEX / 文本对照" Foreground="#7F94B3" FontSize="11" />
                     </StackPanel>

@@ -147,10 +147,15 @@ public partial class UsbTransferView : UserControl, IDisposable
             >= 10 => "已显示前 10 个可移动设备",
             _ => $"已识别 {discovered.Count} 个可移动设备"
         };
+        // 没有设备时给空状态提示，避免表格区域一片空白看不出是"没插盘"还是"坏了"
+        if (DriveEmptyHint is not null)
+            DriveEmptyHint.Visibility = Drives.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         var notReadyCount = discovered.Count(device => !device.IsReady);
-        UsbHintText.Text = notReadyCount == 0
-            ? "所有设备状态正常。勾选设备与文件后点击“批量下发”即可开始复制。"
-            : $"检测到 {notReadyCount} 个设备需要格式化（该状态下无法下发）：勾选它们后点击“批量格式化”即可并行处理，格式化完成会自动变为“可用”；也可开启“插入需格式化 U 盘时自动格式化”由软件代劳。";
+        UsbHintText.Text = discovered.Count == 0
+            ? "未检测到可移动设备。请插入 U 盘（每 3 秒自动刷新），或确认设备在“此电脑”中可见后点击“刷新设备”。"
+            : notReadyCount == 0
+                ? "所有设备状态正常。勾选设备与文件后点击“批量下发”即可开始复制。"
+                : $"检测到 {notReadyCount} 个设备需要格式化（该状态下无法下发）：勾选它们后点击“批量格式化”即可并行处理，格式化完成会自动变为“可用”；也可开启“插入需格式化 U 盘时自动格式化”由软件代劳。";
 
         if (AutoFormatCheck.IsChecked == true && !_isTransferring && !_isFormatting)
         {

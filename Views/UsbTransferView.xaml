@@ -68,7 +68,8 @@
             </StackPanel>
           </DockPanel>
           <!-- 设备表格：填满设备区剩余高度，设备多时表格内部滚动 -->
-          <DataGrid x:Name="DriveGrid" Grid.Row="1" ItemsSource="{Binding Drives}" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" CanUserResizeRows="False" HeadersVisibility="Column" RowHeaderWidth="0" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#EEF1F6" BorderBrush="#EEF1F6" BorderThickness="1" IsReadOnly="False" RowHeight="32" FontSize="13" ColumnHeaderStyle="{StaticResource GridHeader}" ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+          <Grid Grid.Row="1">
+          <DataGrid x:Name="DriveGrid" ItemsSource="{Binding Drives}" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" CanUserResizeRows="False" HeadersVisibility="Column" RowHeaderWidth="0" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#EEF1F6" BorderBrush="#EEF1F6" BorderThickness="1" IsReadOnly="False" RowHeight="32" FontSize="13" ColumnHeaderStyle="{StaticResource GridHeader}" ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
             <DataGrid.Columns>
               <DataGridTemplateColumn Header="下发" Width="52"><DataGridTemplateColumn.CellTemplate><DataTemplate><CheckBox Style="{StaticResource GridCheck}" IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" ToolTip="勾选后用于批量下发或批量格式化" /></DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn>
               <DataGridTextColumn Header="盘符" Width="60" Binding="{Binding RootPath}" IsReadOnly="True" />
@@ -78,6 +79,9 @@
               <DataGridTemplateColumn Header="格式化" Width="90"><DataGridTemplateColumn.CellTemplate><DataTemplate><Button Content="格式化" Padding="7,3" FontSize="12" Click="FormatDrive_Click" ToolTip="调出 Windows 格式化对话框，清空该 U 盘全部数据" /></DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn>
             </DataGrid.Columns>
           </DataGrid>
+            <TextBlock x:Name="DriveEmptyHint" Text="未检测到 U 盘 —— 插入设备后会自动出现在这里" Foreground="#8A97AD" FontSize="12"
+                       HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,16,0,0" IsHitTestVisible="False"/>
+          </Grid>
         </Grid>
       </Border>
 
@@ -137,10 +141,12 @@
         <Grid Grid.Row="0">
           <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
           <StackPanel>
-            <DockPanel>
-              <TextBlock Text="任务进度" FontSize="13" FontWeight="SemiBold"/>
-              <TextBlock x:Name="TransferStatus" Text="等待选择设备与内容" DockPanel.Dock="Right" Foreground="#56637B" FontSize="12" TextTrimming="CharacterEllipsis"/>
-            </DockPanel>
+            <Grid>
+              <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+              <TextBlock Grid.Column="0" Text="任务进度" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>
+              <TextBlock Grid.Column="1" x:Name="TransferStatus" Text="等待选择设备与内容" Foreground="#56637B" FontSize="12"
+                         TextTrimming="CharacterEllipsis" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="12,0,0,0"/>
+            </Grid>
             <TextBlock x:Name="TransferTimeText" Text="" Foreground="#56637B" FontSize="11.5" Margin="0,5,0,0"/>
             <ProgressBar x:Name="TransferProgress" Height="8" Margin="0,5,0,0" Minimum="0" Maximum="100" Value="0"/>
           </StackPanel>
